@@ -1,6 +1,10 @@
 # macrokeyboard
 macro keyboard and space mouse using rpi pico. circuitpython code
 
+https://www.thingiverse.com/thing:7293580
+
+https://www.youtube.com/watch?v=AjmmTDKetks
+
 Here is the complete, consolidated wiring list based on final code.
 
 1. Power Distribution
@@ -50,6 +54,4 @@ E. Joystick Module
 
 F. Lighting
 * WS2812B Data In (DIN): -> GP28
-
-
 
