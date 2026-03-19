@@ -1651,6 +1651,7 @@ class MatrixTab(QWidget):
         self._cfg    = {}
         self._layer  = 0
         self._btns   = []
+        self._selected_key = -1
         self._build()
 
     def _build(self):
@@ -1666,19 +1667,22 @@ class MatrixTab(QWidget):
         self._layer_combo.currentIndexChanged.connect(self._on_layer_change)
         top.addWidget(self._layer_combo)
         top.addStretch()
-        hint = QLabel("Double-click a key to edit it")
+        hint = QLabel("Click a key to edit it in the side panel")
         hint.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
         top.addWidget(hint)
         layout.addLayout(top)
 
-        # Grid
+        # Splitter: grid left, editor right
+        splitter = QSplitter(Qt.Horizontal)
+        splitter.setStyleSheet(f"QSplitter::handle {{ background: {T.BORDER}; width: 2px; }}")
+
+        # ── Left: key grid ──
         grid_card, grid_inner = make_card()
         grid = QGridLayout()
         grid.setSpacing(6)
         for i in range(25):
             r, c = divmod(i, 5)
             if i in GHOST_KEYS:
-                # Ghost position — no physical switch, show as inactive spacer
                 btn = KeyButton(i)
                 btn.setEnabled(False)
                 btn.setText("")
@@ -1692,11 +1696,258 @@ class MatrixTab(QWidget):
                 btn.setToolTip("No switch at this position")
             else:
                 btn = KeyButton(i)
-                btn.doubleClicked.connect(self._open_editor)
+                btn.clicked.connect(lambda checked=False, idx=i: self._select_key(idx))
+                btn.doubleClicked.connect(lambda idx: self._select_key(idx))
             grid.addWidget(btn, r, c)
             self._btns.append(btn)
         grid_inner.addLayout(grid)
-        layout.addWidget(grid_card)
+        splitter.addWidget(grid_card)
+
+        # ── Right: editor panel ──
+        self._editor_scroll = QScrollArea()
+        self._editor_scroll.setWidgetResizable(True)
+        self._editor_scroll.setStyleSheet("border: none;")
+        self._editor_scroll.setMinimumWidth(320)
+
+        self._editor_placeholder = QLabel("← Select a key to edit")
+        self._editor_placeholder.setAlignment(Qt.AlignCenter)
+        self._editor_placeholder.setStyleSheet(
+            f"color: {T.TEXT_DIM}; font-size: 13px; padding: 40px;"
+        )
+        self._editor_scroll.setWidget(self._editor_placeholder)
+        splitter.addWidget(self._editor_scroll)
+
+        splitter.setSizes([420, 340])
+        layout.addWidget(splitter, 1)
+
+    def _select_key(self, idx):
+        if idx in GHOST_KEYS:
+            return
+        # Highlight selected key
+        for i, btn in enumerate(self._btns):
+            if i in GHOST_KEYS:
+                continue
+            if i == idx:
+                btn.setStyleSheet(f"""
+                    QPushButton {{
+                        border: 2px solid {T.BLUE_LT};
+                        border-radius: 8px;
+                    }}
+                """)
+            else:
+                btn.set_key_data(btn._label, btn._type)  # reset style
+
+        self._selected_key = idx
+        layers = self._cfg.get("layers", [])
+        li = self._layer_combo.currentIndex()
+        if li < 0 or li >= len(layers):
+            return
+        kc = layers[li]["keys"][idx] if idx < 25 else {}
+        # Build inline editor
+        self._build_editor_panel(idx, li, kc)
+
+    def _build_editor_panel(self, key_idx, layer_idx, kc):
+        """Build the side panel editor for a specific key."""
+        import copy as _copy
+        cfg = _copy.deepcopy(kc)
+
+        panel = QWidget()
+        panel.setStyleSheet(f"background: {T.SURFACE};")
+        layout = QVBoxLayout(panel)
+        layout.setContentsMargins(12, 12, 12, 12)
+        layout.setSpacing(8)
+
+        # Header
+        r, c = divmod(key_idx, 5)
+        header = QLabel(f"KEY [{r},{c}]  —  INDEX {key_idx}")
+        header.setStyleSheet(
+            f"color: {T.BLUE_LT}; font-size: 12px; font-weight: 700;"
+            f" letter-spacing: 1px;"
+        )
+        layout.addWidget(header)
+        layout.addWidget(hsep())
+
+        # Key type selector
+        layout.addWidget(section_label("Key Type"))
+        type_group = QButtonGroup(panel)
+        types = [("normal","Normal"),("mo","MO (Layer)"),
+                 ("mouse_hold","Mouse Hold"),("enc_mod","Encoder Mod")]
+        type_row = QHBoxLayout()
+        type_radios = {}
+        for val, label in types:
+            rb = QRadioButton(label)
+            rb.setStyleSheet(f"font-size: 11px;")
+            type_group.addButton(rb)
+            type_radios[val] = rb
+            type_row.addWidget(rb)
+        type_row.addStretch()
+        layout.addLayout(type_row)
+        current_type = cfg.get("key_type", "normal")
+        if current_type in type_radios:
+            type_radios[current_type].setChecked(True)
+
+        # Type-specific options stacked widget
+        type_stack = QStackedWidget()
+
+        # Normal page
+        normal_page = QWidget()
+        np_layout = QVBoxLayout(normal_page)
+        np_layout.setContentsMargins(0, 4, 0, 0)
+        np_layout.setSpacing(6)
+
+        tap_display = "+".join(cfg.get("tap",[])) or "—"
+        hold_display = "+".join(cfg.get("hold",[])) or "—"
+        tap_lbl = QLabel(f"Tap:  {tap_display}")
+        tap_lbl.setStyleSheet(f"color: {T.TEXT}; font-size: 11px; font-family: Consolas;")
+        hold_lbl = QLabel(f"Hold:  {hold_display}")
+        hold_lbl.setStyleSheet(f"color: {T.TEXT}; font-size: 11px; font-family: Consolas;")
+        np_layout.addWidget(tap_lbl)
+        np_layout.addWidget(hold_lbl)
+
+        th_row = QHBoxLayout()
+        th_row.addWidget(QLabel("Tap/Hold enabled:"))
+        th_toggle = ToggleSwitch(cfg.get("tap_hold_enabled", False))
+        th_row.addStretch()
+        th_row.addWidget(th_toggle)
+        np_layout.addLayout(th_row)
+
+        macro_steps = cfg.get("macro") or []
+        mac_lbl = QLabel(f"Macro: {len(macro_steps)} steps" if macro_steps else "Macro: none")
+        mac_lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
+        np_layout.addWidget(mac_lbl)
+        np_layout.addStretch()
+        type_stack.addWidget(normal_page)
+
+        # MO page
+        mo_page = QWidget()
+        mo_layout = QVBoxLayout(mo_page)
+        mo_layout.setContentsMargins(0, 4, 0, 0)
+        mo_lbl = QLabel("Target layer:")
+        mo_spin = QSpinBox()
+        mo_spin.setRange(0, 9)
+        mo_spin.setValue(cfg.get("mo_layer", 0) or 0)
+        mo_row = QHBoxLayout()
+        mo_row.addWidget(mo_lbl)
+        mo_row.addWidget(mo_spin)
+        mo_row.addStretch()
+        mo_layout.addLayout(mo_row)
+        mo_layout.addStretch()
+        type_stack.addWidget(mo_page)
+
+        # Mouse hold page
+        mh_page = QWidget()
+        mh_layout = QVBoxLayout(mh_page)
+        mh_layout.setContentsMargins(0, 4, 0, 0)
+        mb_group = QButtonGroup(panel)
+        cur_mb = cfg.get("mouse_button", "LEFT") or "LEFT"
+        for bname in ("LEFT","RIGHT","MIDDLE"):
+            rb = QRadioButton(f"{bname} button")
+            mb_group.addButton(rb)
+            if bname == cur_mb:
+                rb.setChecked(True)
+            setattr(panel, f"_mb_{bname.lower()}", rb)
+            mh_layout.addWidget(rb)
+        mh_layout.addStretch()
+        type_stack.addWidget(mh_page)
+
+        # Encoder mod page
+        em_page = QWidget()
+        em_layout = QVBoxLayout(em_page)
+        em_layout.setContentsMargins(0, 4, 0, 0)
+        em_row = QHBoxLayout()
+        em_row.addWidget(QLabel("Speed factor:"))
+        em_spin = QDoubleSpinBox()
+        em_spin.setRange(0.01, 10.0)
+        em_spin.setSingleStep(0.1)
+        em_spin.setValue(cfg.get("enc_mod_factor", 0.1) or 0.1)
+        em_row.addWidget(em_spin)
+        em_row.addStretch()
+        em_layout.addLayout(em_row)
+        em_layout.addStretch()
+        type_stack.addWidget(em_page)
+
+        layout.addWidget(type_stack)
+
+        type_map = {"normal": 0, "mo": 1, "mouse_hold": 2, "enc_mod": 3}
+        type_stack.setCurrentIndex(type_map.get(current_type, 0))
+
+        def _on_type(rb, checked):
+            if not checked:
+                return
+            for val, radio in type_radios.items():
+                if radio is rb:
+                    type_stack.setCurrentIndex(type_map.get(val, 0))
+                    cfg["key_type"] = val
+                    break
+        for val, rb in type_radios.items():
+            rb.toggled.connect(lambda c, r=rb: _on_type(r, c))
+
+        layout.addWidget(hsep())
+
+        # Buttons: Edit Full / Apply / Open Macro
+        btn_row = QHBoxLayout()
+        edit_btn = QPushButton("EDIT FULL...")
+        edit_btn.setToolTip("Open the full key editor dialog for tap/hold capture and macros")
+        edit_btn.clicked.connect(lambda: self._open_full_editor(key_idx))
+        edit_btn.setStyleSheet(
+            f"background: {T.SURFACE3}; color: {T.TEXT}; border: 1px solid {T.BORDER2};"
+            f" border-radius: 6px; padding: 6px 14px; font-weight: 600; font-size: 11px;"
+        )
+        btn_row.addWidget(edit_btn)
+
+        apply_btn = accent_btn("APPLY")
+        apply_btn.setFixedWidth(80)
+
+        def _apply():
+            kt = cfg.get("key_type", "normal")
+            if kt == "mo":
+                cfg["mo_layer"] = mo_spin.value()
+            elif kt == "mouse_hold":
+                for bname in ("LEFT","RIGHT","MIDDLE"):
+                    rb = getattr(panel, f"_mb_{bname.lower()}", None)
+                    if rb and rb.isChecked():
+                        cfg["mouse_button"] = bname
+                        break
+            elif kt == "enc_mod":
+                cfg["enc_mod_factor"] = em_spin.value()
+            cfg["tap_hold_enabled"] = th_toggle.isChecked()
+            self.serial.send({
+                "action": "set_key", "layer": layer_idx, "index": key_idx,
+                **{k: cfg.get(k) for k in
+                   ("tap","hold","tap_hold_enabled","macro","key_repeat",
+                    "key_type","mo_layer","mouse_button","enc_mod_factor")}
+            })
+            layers = self._cfg.get("layers", [])
+            if layer_idx < len(layers):
+                layers[layer_idx]["keys"][key_idx] = cfg
+            self._refresh_grid()
+            self._select_key(key_idx)   # refresh panel
+
+        apply_btn.clicked.connect(_apply)
+        btn_row.addWidget(apply_btn)
+        btn_row.addStretch()
+        layout.addLayout(btn_row)
+
+        self._editor_scroll.setWidget(panel)
+
+    def _open_full_editor(self, idx):
+        """Open the full KeyEditorDialog for tap/hold capture and macro editing."""
+        if idx in GHOST_KEYS:
+            return
+        layers = self._cfg.get("layers", [])
+        li = self._layer_combo.currentIndex()
+        if li < 0 or li >= len(layers):
+            return
+        kc = layers[li]["keys"][idx] if idx < 25 else {}
+        dlg = KeyEditorDialog(idx, li, kc, self.serial, self)
+        if dlg.exec() == QDialog.Accepted:
+            result = dlg.get_result()
+            if result:
+                ki, kdata = result
+                layers[li]["keys"][ki] = kdata
+                self._refresh_grid(li)
+                self.key_updated.emit(li, ki, kdata)
+                self._select_key(ki)   # refresh side panel
 
     def apply_config(self, cfg):
         self._cfg = cfg
@@ -1718,6 +1969,8 @@ class MatrixTab(QWidget):
 
     def _on_layer_change(self):
         self._refresh_grid()
+        if self._selected_key >= 0:
+            self._select_key(self._selected_key)
 
     def _refresh_grid(self, layer_idx=None):
         layers = self._cfg.get("layers",[])
@@ -1729,26 +1982,10 @@ class MatrixTab(QWidget):
         if layer_idx >= len(layers): return
         keys = layers[layer_idx].get("keys",[])
         for i, btn in enumerate(self._btns):
-            if i in GHOST_KEYS: continue   # never update ghost positions
+            if i in GHOST_KEYS: continue
             kc = keys[i] if i < len(keys) else {}
             label, kt = _key_label_and_type(kc)
             btn.set_key_data(label, kt)
-
-    def _open_editor(self, idx):
-        if idx in GHOST_KEYS: return       # safety guard
-        layers = self._cfg.get("layers",[])
-        if not layers: return
-        li = self._layer_combo.currentIndex()
-        if li < 0 or li >= len(layers): return
-        kc = layers[li]["keys"][idx] if idx < 25 else {}
-        dlg = KeyEditorDialog(idx, li, kc, self.serial, self)
-        if dlg.exec() == QDialog.Accepted:
-            result = dlg.get_result()
-            if result:
-                ki, kdata = result
-                layers[li]["keys"][ki] = kdata
-                self._refresh_grid(li)
-                self.key_updated.emit(li, ki, kdata)
 
     def flash_key(self, idx):
         if idx not in GHOST_KEYS and 0 <= idx < len(self._btns):
@@ -1762,7 +1999,12 @@ class LayersTab(QWidget):
         self._build()
 
     def _build(self):
-        layout = QVBoxLayout(self)
+        scroll = QScrollArea()
+        scroll.setWidgetResizable(True)
+        scroll.setStyleSheet("border: none;")
+        inner = QWidget()
+        inner.setStyleSheet(f"background: {T.SURFACE};")
+        layout = QVBoxLayout(inner)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
@@ -1770,7 +2012,7 @@ class LayersTab(QWidget):
         lm_card, lm_inner = make_card("LAYER MANAGEMENT")
         list_row = QHBoxLayout()
         self._layer_list = QListWidget()
-        self._layer_list.setMinimumHeight(160)
+        self._layer_list.setMinimumHeight(140)
         list_row.addWidget(self._layer_list, 1)
         btn_col = QVBoxLayout()
         btn_col.setSpacing(6)
@@ -1795,13 +2037,13 @@ class LayersTab(QWidget):
         active_row.addWidget(self._active_lbl)
         active_row.addStretch()
         lm_inner.addLayout(active_row)
+        layout.addWidget(lm_card)
 
-        # Space mouse per-layer settings
+        # Space mouse per-layer toggle
         sm_card, sm_inner = make_card("SPACE MOUSE  (per layer)")
         sm_desc = QLabel(
             "Enable the space mouse only on layers where you need it.\n"
-            "When disabled the MLX sensor is not read, reducing CPU load.\n"
-            "Enable this on your Fusion 360 / CAD layer, leave off on others."
+            "When disabled the MLX sensor is not read, reducing CPU load."
         )
         sm_desc.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
         sm_desc.setWordWrap(True)
@@ -1817,15 +2059,80 @@ class LayersTab(QWidget):
         sm_inner.addLayout(sm_row)
         layout.addWidget(sm_card)
 
+        # ── Encoder modes (per layer) ──
+        enc_card, enc_inner = make_card("ENCODER MODES  (per layer — follows selection above)")
+        modes_list = list(ENCODER_MODES.values())
+        for enc in (1, 2):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Encoder {enc}:"))
+            cb = QComboBox()
+            cb.addItems(modes_list)
+            cb.setFixedWidth(200)
+            cb.currentIndexChanged.connect(
+                lambda _, e=enc: self._send_enc_mode(e)
+            )
+            setattr(self, f"_enc{enc}_mode_cb", cb)
+            row.addWidget(cb)
+            row.addStretch()
+            enc_inner.addLayout(row)
+        enc_inner.addWidget(hsep())
+        # Encoder switch actions
+        for enc in (1, 2):
+            row = QHBoxLayout()
+            row.addWidget(QLabel(f"Enc {enc} switch:"))
+            cb = QComboBox()
+            cb.addItems(BUTTON_ACTIONS[1:])
+            cb.setFixedWidth(200)
+            cb.currentTextChanged.connect(
+                lambda v, e=enc: self._send_enc_sw(e, v)
+            )
+            setattr(self, f"_enc{enc}_sw_cb", cb)
+            row.addWidget(cb)
+            row.addStretch()
+            enc_inner.addLayout(row)
+        enc_inner.addWidget(hsep())
+        # Global encoder settings
+        enc_inner.addWidget(section_label("Global Encoder Settings"))
+        self._e1_speed  = SliderRow("Encoder 1 Speed", "enc1_speed", 1, 50, 1, 20)
+        self._e2_speed  = SliderRow("Encoder 2 Speed", "enc2_speed", 1, 50, 1, 20)
+        self._e1_speed.valueChanged.connect(
+            lambda v: self.serial.send({"action":"set","key":"enc1_speed","value":v})
+        )
+        self._e2_speed.valueChanged.connect(
+            lambda v: self.serial.send({"action":"set","key":"enc2_speed","value":v})
+        )
+        enc_inner.addWidget(self._e1_speed)
+        e1_inv_row = QHBoxLayout()
+        e1_inv_lbl = QLabel("Encoder 1 Invert")
+        e1_inv_lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
+        self._e1_invert = ToggleSwitch()
+        self._e1_invert.toggled.connect(
+            lambda v: self.serial.send({"action":"set","key":"enc1_invert","value":v})
+        )
+        e1_inv_row.addWidget(e1_inv_lbl)
+        e1_inv_row.addStretch()
+        e1_inv_row.addWidget(self._e1_invert)
+        enc_inner.addLayout(e1_inv_row)
+        enc_inner.addWidget(self._e2_speed)
+        e2_inv_row = QHBoxLayout()
+        e2_inv_lbl = QLabel("Encoder 2 Invert")
+        e2_inv_lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
+        self._e2_invert = ToggleSwitch()
+        self._e2_invert.toggled.connect(
+            lambda v: self.serial.send({"action":"set","key":"enc2_invert","value":v})
+        )
+        e2_inv_row.addWidget(e2_inv_lbl)
+        e2_inv_row.addStretch()
+        e2_inv_row.addWidget(self._e2_invert)
+        enc_inner.addLayout(e2_inv_row)
+        layout.addWidget(enc_card)
+
         # _cfg must be initialised before the signal connection below
         self._cfg = {}
         self._layer_list.currentRowChanged.connect(self._on_layer_sel_changed)
 
-        layout.addWidget(lm_card)
-
         # Buttons & settings card
         set_card, set_inner = make_card("BUTTONS, TAP/HOLD & KEY REPEAT")
-        # Extra btn 1
         e1_row = QHBoxLayout()
         e1_row.addWidget(QLabel("Extra Button 1 action:"))
         self._btn1_combo = QComboBox()
@@ -1837,9 +2144,7 @@ class LayersTab(QWidget):
         e1_row.addWidget(self._btn1_combo)
         e1_row.addStretch()
         set_inner.addLayout(e1_row)
-        note = QLabel(
-            "Hold Extra Btn 1 for 300ms → enc2 becomes ZOOM until released"
-        )
+        note = QLabel("Hold Extra Btn 1 for 300ms → enc2 becomes ZOOM until released")
         note.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 10px;")
         set_inner.addWidget(note)
         set_inner.addWidget(hsep())
@@ -1881,6 +2186,11 @@ class LayersTab(QWidget):
         layout.addWidget(set_card)
         layout.addStretch()
 
+        scroll.setWidget(inner)
+        outer = QVBoxLayout(self)
+        outer.setContentsMargins(0, 0, 0, 0)
+        outer.addWidget(scroll)
+
     def apply_config(self, cfg):
         self._cfg = cfg
         layers = cfg.get("layers",[])
@@ -1895,42 +2205,76 @@ class LayersTab(QWidget):
         self._layer_list.blockSignals(False)
         al_name = layers[al]["name"] if al < len(layers) else "—"
         self._active_lbl.setText(f"[{al}] {al_name}")
-        # Refresh sm toggle for current selection
         row = self._layer_list.currentRow()
         if row < 0: row = al
         if row < len(layers):
             self._sm_toggle.setChecked(layers[row].get("sm_active", False))
-        if "btn_extra1" in cfg:
-            self._btn1_combo.setCurrentText(cfg["btn_extra1"])
-        if "tap_hold_ms" in cfg:
-            self._tap_hold_row.set_value(cfg["tap_hold_ms"])
-        if "key_repeat_enabled" in cfg:
-            self._rep_toggle.setChecked(cfg["key_repeat_enabled"])
-        if "key_repeat_delay_ms" in cfg:
-            self._rep_delay.set_value(cfg["key_repeat_delay_ms"])
-        if "key_repeat_rate_ms" in cfg:
-            self._rep_rate.set_value(cfg["key_repeat_rate_ms"])
+        self._refresh_enc_modes()
+        if "btn_extra1" in cfg: self._btn1_combo.setCurrentText(cfg["btn_extra1"])
+        if "tap_hold_ms" in cfg: self._tap_hold_row.set_value(cfg["tap_hold_ms"])
+        if "key_repeat_enabled" in cfg: self._rep_toggle.setChecked(cfg["key_repeat_enabled"])
+        if "key_repeat_delay_ms" in cfg: self._rep_delay.set_value(cfg["key_repeat_delay_ms"])
+        if "key_repeat_rate_ms" in cfg: self._rep_rate.set_value(cfg["key_repeat_rate_ms"])
+        if "enc1_speed" in cfg: self._e1_speed.set_value(cfg["enc1_speed"])
+        if "enc2_speed" in cfg: self._e2_speed.set_value(cfg["enc2_speed"])
+        if "enc1_invert" in cfg: self._e1_invert.setChecked(cfg["enc1_invert"])
+        if "enc2_invert" in cfg: self._e2_invert.setChecked(cfg["enc2_invert"])
 
     def set_active(self, idx, name):
         self._active_lbl.setText(f"[{idx}] {name}")
 
     def set_sm_active(self, val):
-        """Called when layer changes externally — syncs toggle without sending to Pico."""
         self._sm_toggle.blockSignals(True)
         self._sm_toggle.setChecked(val)
         self._sm_toggle.blockSignals(False)
 
     def _on_layer_sel_changed(self, row):
-        """Update sm toggle when a different layer is selected in the list."""
         layers = self._cfg.get("layers", [])
         if not layers or row < 0 or row >= len(layers):
             return
         self._sm_toggle.blockSignals(True)
         self._sm_toggle.setChecked(layers[row].get("sm_active", False))
         self._sm_toggle.blockSignals(False)
+        self._refresh_enc_modes()
+
+    def _refresh_enc_modes(self):
+        layers = self._cfg.get("layers", [])
+        idx = self._layer_list.currentRow()
+        if idx < 0 or idx >= len(layers):
+            return
+        layer = layers[idx]
+        mode_vals = list(ENCODER_MODES.keys())
+        for enc in (1, 2):
+            mode = layer.get(f"enc{enc}_mode", "V_SCROLL")
+            cb = getattr(self, f"_enc{enc}_mode_cb")
+            cb.blockSignals(True)
+            if mode in ENCODER_MODES:
+                cb.setCurrentText(ENCODER_MODES[mode])
+            cb.blockSignals(False)
+            sw = layer.get(f"enc{enc}_sw", "")
+            sw_cb = getattr(self, f"_enc{enc}_sw_cb")
+            sw_cb.blockSignals(True)
+            sw_cb.setCurrentText(sw)
+            sw_cb.blockSignals(False)
+
+    def _send_enc_mode(self, enc):
+        layers = self._cfg.get("layers", [])
+        li = self._layer_list.currentRow()
+        if li < 0 or li >= len(layers):
+            return
+        lmap = {v: k for k, v in ENCODER_MODES.items()}
+        cb = getattr(self, f"_enc{enc}_mode_cb")
+        mode = lmap.get(cb.currentText(), "V_SCROLL")
+        self.serial.send({"action": "set_encoder_mode", "layer": li, "enc": enc, "mode": mode})
+
+    def _send_enc_sw(self, enc, val):
+        layers = self._cfg.get("layers", [])
+        li = self._layer_list.currentRow()
+        if li < 0 or li >= len(layers):
+            return
+        self.serial.send({"action": "set_enc_sw", "layer": li, "enc": enc, "value": val})
 
     def _send_sm_active(self, val):
-        """Send sm_active change for the currently selected layer."""
         row = self._layer_list.currentRow()
         if row < 0: return
         layers = self._cfg.get("layers", [])
@@ -1938,7 +2282,6 @@ class LayersTab(QWidget):
             layers[row]["sm_active"] = val
             self.serial.send({"action":"set_layer_prop","layer":row,
                               "key":"sm_active","value":val})
-            # Refresh list to show/hide the 🖱 indicator
             self.apply_config(self._cfg)
 
     def _add(self):
@@ -1964,7 +2307,8 @@ class LayersTab(QWidget):
             self.serial.send({"action":"rename_layer","index":row,"name":name})
 
 
-class EncodersTab(QWidget):
+class InputTab(QWidget):
+    """Combined Joystick + Space Mouse settings tab."""
     def __init__(self, serial_mgr, parent=None):
         super().__init__(parent)
         self.serial = serial_mgr
@@ -1980,173 +2324,8 @@ class EncodersTab(QWidget):
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        # Mode per layer
-        mode_card, mode_inner = make_card("ENCODER MODES  (per layer)")
-        mode_row = QHBoxLayout()
-        mode_row.addWidget(QLabel("Layer:"))
-        self._enc_layer_combo = QComboBox()
-        self._enc_layer_combo.setFixedWidth(160)
-        self._enc_layer_combo.currentIndexChanged.connect(self._refresh_modes)
-        mode_row.addWidget(self._enc_layer_combo)
-        mode_row.addStretch()
-        mode_inner.addLayout(mode_row)
-
-        modes_list = list(ENCODER_MODES.values())
-        for enc in (1, 2):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Encoder {enc}:"))
-            cb = QComboBox()
-            cb.addItems(modes_list)
-            cb.setFixedWidth(200)
-            cb.currentIndexChanged.connect(
-                lambda _, e=enc: self._send_mode(e)
-            )
-            setattr(self, f"_enc{enc}_mode_cb", cb)
-            row.addWidget(cb)
-            row.addStretch()
-            mode_inner.addLayout(row)
-        layout.addWidget(mode_card)
-
-        # Switch actions per layer
-        sw_card, sw_inner = make_card("ENCODER SWITCH ACTIONS  (per layer)")
-        sw_row = QHBoxLayout()
-        sw_row.addWidget(QLabel("Layer:"))
-        self._enc_sw_layer_combo = QComboBox()
-        self._enc_sw_layer_combo.setFixedWidth(160)
-        self._enc_sw_layer_combo.currentIndexChanged.connect(self._refresh_sw)
-        sw_row.addWidget(self._enc_sw_layer_combo)
-        sw_row.addStretch()
-        sw_inner.addLayout(sw_row)
-
-        for enc in (1, 2):
-            row = QHBoxLayout()
-            row.addWidget(QLabel(f"Encoder {enc} switch:"))
-            cb = QComboBox()
-            cb.addItems(BUTTON_ACTIONS[1:])
-            cb.setFixedWidth(200)
-            cb.currentTextChanged.connect(
-                lambda v, e=enc: self._send_sw(e, v)
-            )
-            setattr(self, f"_enc{enc}_sw_cb", cb)
-            row.addWidget(cb)
-            row.addStretch()
-            sw_inner.addLayout(row)
-        layout.addWidget(sw_card)
-
-        # Global settings
-        glob_card, glob_inner = make_card("ENCODER SETTINGS  (global)")
-        self._e1_speed  = SliderRow("Encoder 1 Speed", "enc1_speed", 1, 50, 1, 20)
-        self._e1_invert = self._toggle_row(glob_inner, "Encoder 1 Invert", "enc1_invert")
-        self._e2_speed  = SliderRow("Encoder 2 Speed", "enc2_speed", 1, 50, 1, 20)
-        self._e2_invert = self._toggle_row(glob_inner, "Encoder 2 Invert", "enc2_invert")
-        self._e1_speed.valueChanged.connect(
-            lambda v: self.serial.send({"action":"set","key":"enc1_speed","value":v})
-        )
-        self._e2_speed.valueChanged.connect(
-            lambda v: self.serial.send({"action":"set","key":"enc2_speed","value":v})
-        )
-        glob_inner.insertWidget(glob_inner.count()-1 if glob_inner.count() else 0, self._e1_speed)
-        glob_inner.insertWidget(glob_inner.count(), self._e2_speed)
-        layout.addWidget(glob_card)
-        layout.addStretch()
-
-        scroll.setWidget(inner)
-        outer = QVBoxLayout(self)
-        outer.setContentsMargins(0, 0, 0, 0)
-        outer.addWidget(scroll)
-
-    def _toggle_row(self, parent_layout, label, key):
-        row_w = QWidget()
-        row_l = QHBoxLayout(row_w)
-        row_l.setContentsMargins(0, 2, 0, 2)
-        lbl = QLabel(label)
-        lbl.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
-        tog = ToggleSwitch()
-        tog.toggled.connect(
-            lambda v, k=key: self.serial.send({"action":"set","key":k,"value":v})
-        )
-        row_l.addWidget(lbl)
-        row_l.addStretch()
-        row_l.addWidget(tog)
-        parent_layout.addWidget(row_w)
-        return tog
-
-    def apply_config(self, cfg):
-        layers = cfg.get("layers",[])
-        names  = [l.get("name","") for l in layers]
-        for cb in (self._enc_layer_combo, self._enc_sw_layer_combo):
-            cb.blockSignals(True)
-            cb.clear()
-            cb.addItems(names)
-            cb.blockSignals(False)
-        self._cfg = cfg
-        self._refresh_modes()
-        self._refresh_sw()
-        if "enc1_speed" in cfg: self._e1_speed.set_value(cfg["enc1_speed"])
-        if "enc2_speed" in cfg: self._e2_speed.set_value(cfg["enc2_speed"])
-        if "enc1_invert" in cfg: self._e1_invert.setChecked(cfg["enc1_invert"])
-        if "enc2_invert" in cfg: self._e2_invert.setChecked(cfg["enc2_invert"])
-
-    def _refresh_modes(self):
-        cfg = getattr(self, "_cfg", {})
-        layers = cfg.get("layers",[])
-        idx = self._enc_layer_combo.currentIndex()
-        if idx < 0 or idx >= len(layers): return
-        layer = layers[idx]
-        mode_vals = list(ENCODER_MODES.keys())
-        mode_lbls = list(ENCODER_MODES.values())
-        for enc in (1, 2):
-            mode = layer.get(f"enc{enc}_mode","V_SCROLL")
-            cb = getattr(self, f"_enc{enc}_mode_cb")
-            cb.blockSignals(True)
-            if mode in mode_vals:
-                cb.setCurrentText(ENCODER_MODES[mode])
-            cb.blockSignals(False)
-
-    def _refresh_sw(self):
-        cfg = getattr(self, "_cfg", {})
-        layers = cfg.get("layers",[])
-        idx = self._enc_sw_layer_combo.currentIndex()
-        if idx < 0 or idx >= len(layers): return
-        layer = layers[idx]
-        for enc in (1,2):
-            sw = layer.get(f"enc{enc}_sw","")
-            cb = getattr(self, f"_enc{enc}_sw_cb")
-            cb.blockSignals(True)
-            cb.setCurrentText(sw)
-            cb.blockSignals(False)
-
-    def _send_mode(self, enc):
-        cfg = getattr(self, "_cfg", {})
-        layers = cfg.get("layers",[])
-        li = self._enc_layer_combo.currentIndex()
-        if li < 0 or li >= len(layers): return
-        lmap = {v:k for k,v in ENCODER_MODES.items()}
-        cb   = getattr(self, f"_enc{enc}_mode_cb")
-        mode = lmap.get(cb.currentText(), "V_SCROLL")
-        self.serial.send({"action":"set_encoder_mode","layer":li,"enc":enc,"mode":mode})
-
-    def _send_sw(self, enc, val):
-        cfg = getattr(self, "_cfg", {})
-        layers = cfg.get("layers",[])
-        li = self._enc_sw_layer_combo.currentIndex()
-        if li < 0 or li >= len(layers): return
-        self.serial.send({"action":"set_enc_sw","layer":li,"enc":enc,"value":val})
-
-
-class JoystickTab(QWidget):
-    def __init__(self, serial_mgr, parent=None):
-        super().__init__(parent)
-        self.serial = serial_mgr
-        self._build()
-
-    def _build(self):
-        layout = QVBoxLayout(self)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        card, inner = make_card("ANALOG JOYSTICK")
-
+        # ── Joystick section ──
+        joy_card, joy_inner = make_card("ANALOG JOYSTICK")
         self._speed = SliderRow("Speed Multiplier", "joy_speed", 0.1, 5.0, 0.1, 1.0)
         self._dz    = SliderRow("Deadzone (raw units)", "joy_deadzone", 200, 8000, 100, 2000)
         self._speed.valueChanged.connect(
@@ -2155,9 +2334,9 @@ class JoystickTab(QWidget):
         self._dz.valueChanged.connect(
             lambda v: self.serial.send({"action":"set","key":"joy_deadzone","value":v})
         )
-        inner.addWidget(self._speed)
-        inner.addWidget(self._dz)
-        inner.addWidget(hsep())
+        joy_inner.addWidget(self._speed)
+        joy_inner.addWidget(self._dz)
+        joy_inner.addWidget(hsep())
 
         for label, key in (("Invert X axis","joy_invert_x"),("Invert Y axis","joy_invert_y")):
             row = QHBoxLayout()
@@ -2171,9 +2350,8 @@ class JoystickTab(QWidget):
             row.addWidget(lbl)
             row.addStretch()
             row.addWidget(tog)
-            inner.addLayout(row)
-
-        inner.addWidget(hsep())
+            joy_inner.addLayout(row)
+        joy_inner.addWidget(hsep())
 
         act_row = QHBoxLayout()
         act_row.addWidget(QLabel("Click action:"))
@@ -2185,46 +2363,21 @@ class JoystickTab(QWidget):
         )
         act_row.addWidget(self._joy_sw_combo)
         act_row.addStretch()
-        inner.addLayout(act_row)
-        layout.addWidget(card)
-        layout.addStretch()
+        joy_inner.addLayout(act_row)
+        layout.addWidget(joy_card)
 
-    def apply_config(self, cfg):
-        if "joy_speed"    in cfg: self._speed.set_value(cfg["joy_speed"])
-        if "joy_deadzone" in cfg: self._dz.set_value(cfg["joy_deadzone"])
-        if "joy_invert_x" in cfg: self._ix_toggle.setChecked(cfg["joy_invert_x"])
-        if "joy_invert_y" in cfg: self._iy_toggle.setChecked(cfg["joy_invert_y"])
-        if "joy_sw"       in cfg: self._joy_sw_combo.setCurrentText(cfg["joy_sw"])
-
-
-class SpaceMouseTab(QWidget):
-    def __init__(self, serial_mgr, parent=None):
-        super().__init__(parent)
-        self.serial = serial_mgr
-        self._build()
-
-    def _build(self):
-        scroll = QScrollArea()
-        scroll.setWidgetResizable(True)
-        scroll.setStyleSheet("border: none;")
-        inner = QWidget()
-        inner.setStyleSheet(f"background: {T.SURFACE};")
-        layout = QVBoxLayout(inner)
-        layout.setContentsMargins(16, 16, 16, 16)
-        layout.setSpacing(12)
-
-        # Movement
-        mv_card, mv_inner = make_card("MOVEMENT SETTINGS")
+        # ── Space Mouse section ──
+        mv_card, mv_inner = make_card("SPACE MOUSE — MOVEMENT")
         self._sens = SliderRow("Sensitivity",        "sm_sensitivity",  1, 50,  0.5, 15.0)
-        self._dz   = SliderRow("XY Deadzone",        "sm_deadzone",     10, 400, 5,   100.0)
+        self._sm_dz = SliderRow("XY Deadzone",       "sm_deadzone",     10, 400, 5,   100.0)
         self._zt   = SliderRow("Z Threshold",        "sm_z_threshold",  10, 400, 5,   100.0)
-        for s in (self._sens, self._dz, self._zt):
+        for s in (self._sens, self._sm_dz, self._zt):
             s.valueChanged.connect(lambda v, k=s.key: self.serial.send({"action":"set","key":k,"value":v}))
             mv_inner.addWidget(s)
         layout.addWidget(mv_card)
 
         # Filter & accel
-        fa_card, fa_inner = make_card("FILTER & ACCELERATION")
+        fa_card, fa_inner = make_card("SPACE MOUSE — FILTER & ACCELERATION")
         self._filt  = SliderRow("Filter (lower = smoother)", "sm_filter",       0.01, 1.0, 0.01, 0.25)
         self._curve = SliderRow("Accel curve (1 = linear)",  "sm_accel_curve",  1.0,  4.0, 0.1,  2.0)
         self._filt.valueChanged.connect(
@@ -2250,7 +2403,7 @@ class SpaceMouseTab(QWidget):
         layout.addWidget(fa_card)
 
         # Hysteresis
-        hy_card, hy_inner = make_card("ORBIT HYSTERESIS")
+        hy_card, hy_inner = make_card("SPACE MOUSE — ORBIT HYSTERESIS")
         self._enter = SliderRow("Enter orbit (ms)", "sm_orbit_enter_ms", 0, 200, 5, 40)
         self._exit  = SliderRow("Exit orbit (ms)",  "sm_orbit_exit_ms",  0, 300, 5, 80)
         self._enter.valueChanged.connect(
@@ -2267,7 +2420,7 @@ class SpaceMouseTab(QWidget):
         layout.addWidget(hy_card)
 
         # Z-axis mode
-        zm_card, zm_inner = make_card("Z-AXIS MODE")
+        zm_card, zm_inner = make_card("SPACE MOUSE — Z-AXIS MODE")
         zm_row = QHBoxLayout()
         self._zm_group = QButtonGroup(self)
         self._zm_zoom = QRadioButton("Zoom (scroll wheel)")
@@ -2320,13 +2473,20 @@ class SpaceMouseTab(QWidget):
         self._zero_lbl.setStyleSheet(f"color: {T.GREEN}; font-size: 11px;")
 
     def apply_config(self, cfg):
-        mapping = {
-            "sm_sensitivity": self._sens, "sm_deadzone": self._dz,
+        # Joystick
+        if "joy_speed"    in cfg: self._speed.set_value(cfg["joy_speed"])
+        if "joy_deadzone" in cfg: self._dz.set_value(cfg["joy_deadzone"])
+        if "joy_invert_x" in cfg: self._ix_toggle.setChecked(cfg["joy_invert_x"])
+        if "joy_invert_y" in cfg: self._iy_toggle.setChecked(cfg["joy_invert_y"])
+        if "joy_sw"       in cfg: self._joy_sw_combo.setCurrentText(cfg["joy_sw"])
+        # Space mouse
+        sm_mapping = {
+            "sm_sensitivity": self._sens, "sm_deadzone": self._sm_dz,
             "sm_z_threshold": self._zt,   "sm_filter":   self._filt,
             "sm_accel_curve": self._curve, "sm_orbit_enter_ms": self._enter,
             "sm_orbit_exit_ms": self._exit,
         }
-        for k, widget in mapping.items():
+        for k, widget in sm_mapping.items():
             if k in cfg: widget.set_value(cfg[k])
         if "sm_accel"  in cfg: self._accel_toggle.setChecked(cfg["sm_accel"])
         if "sm_z_mode" in cfg:
@@ -2433,6 +2593,22 @@ class ProfilesTab(QWidget):
         map_inner.addLayout(def_row)
 
         layout.addWidget(map_card)
+
+        # ── Import/Export card ──
+        ie_card, ie_inner = make_card("PROFILE IMPORT / EXPORT")
+        ie_desc = QLabel("Import or export the full Pico configuration (all layers, keys, settings, and app mappings) as a JSON file.")
+        ie_desc.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
+        ie_desc.setWordWrap(True)
+        ie_inner.addWidget(ie_desc)
+        ie_row = QHBoxLayout()
+        self._import_btn = QPushButton("IMPORT PROFILE")
+        self._export_btn = QPushButton("EXPORT PROFILE")
+        ie_row.addWidget(self._import_btn)
+        ie_row.addWidget(self._export_btn)
+        ie_row.addStretch()
+        ie_inner.addLayout(ie_row)
+        layout.addWidget(ie_card)
+
         layout.addStretch()
 
     def _scan_apps(self):
@@ -3036,19 +3212,13 @@ class MainWindow(QMainWindow):
         cb_layout.addWidget(self._conn_btn)
         cb_layout.addStretch()
 
-        self._import_btn = QPushButton("IMPORT PROFILE")
-        self._export_btn = QPushButton("EXPORT PROFILE")
         self._save_btn   = QPushButton("SAVE TO PICO")
         self._save_btn.setStyleSheet(
             f"background: {T.BLUE_DIM}; color: {T.BLUE_LT}; border: 1px solid {T.BLUE_DIM};"
             f" border-radius: 6px; padding: 5px 16px; font-weight: 700; font-size: 11px;"
         )
-        self._import_btn.clicked.connect(self._import_profile)
-        self._export_btn.clicked.connect(self._export_profile)
         self._save_btn.clicked.connect(self._save_to_pico)
 
-        cb_layout.addWidget(self._import_btn)
-        cb_layout.addWidget(self._export_btn)
         cb_layout.addWidget(self._save_btn)
         root.addWidget(conn_bar)
 
@@ -3058,20 +3228,18 @@ class MainWindow(QMainWindow):
 
         self._tab_matrix  = MatrixTab(self.serial)
         self._tab_layers  = LayersTab(self.serial)
-        self._tab_encoders= EncodersTab(self.serial)
-        self._tab_joy     = JoystickTab(self.serial)
-        self._tab_sm      = SpaceMouseTab(self.serial)
+        self._tab_input   = InputTab(self.serial)
         self._tab_profiles= ProfilesTab(self.serial)
         self._tab_profiles.mappings_changed.connect(self._sync_app_watcher)
+        self._tab_profiles._import_btn.clicked.connect(self._import_profile)
+        self._tab_profiles._export_btn.clicked.connect(self._export_profile)
         self._tab_vis     = VisualiserTab()
         self._tab_vis.passthrough_changed.connect(self._on_passthrough_changed)
 
         tab_defs = [
             ("  Matrix  ",       self._tab_matrix),
             ("  Layers  ",       self._tab_layers),
-            ("  Encoders  ",     self._tab_encoders),
-            ("  Joystick  ",     self._tab_joy),
-            ("  Space Mouse  ",  self._tab_sm),
+            ("  Input  ",        self._tab_input),
             ("  Profiles  ",     self._tab_profiles),
             ("  Visualiser  ",   self._tab_vis),
         ]
@@ -3139,7 +3307,7 @@ class MainWindow(QMainWindow):
     def _on_disconnected(self):
         if self._tab_vis._passthrough:
             self._tab_vis._pt_toggle.setChecked(False)
-        self._tab_sm._zero_lbl.setText("")
+        self._tab_input._zero_lbl.setText("")
         self._status_dot.setStyleSheet(f"color: {T.RED}; font-size: 16px; border: none;")
         self._status_lbl.setText("Disconnected")
         self._conn_btn.setText("CONNECT")
@@ -3290,7 +3458,7 @@ class MainWindow(QMainWindow):
             self._tab_vis.set_zoom_override(msg.get("active",False))
 
         elif ev == "zeroed":
-            self._tab_sm.set_zeroed(msg.get("offsets",[0,0,0]))
+            self._tab_input.set_zeroed(msg.get("offsets",[0,0,0]))
             self._log("Space mouse zeroed.")
 
         elif ev == "passthrough_on":
@@ -3347,9 +3515,7 @@ class MainWindow(QMainWindow):
     def _apply_config(self, from_boot=False):
         self._tab_matrix.apply_config(self._cfg)
         self._tab_layers.apply_config(self._cfg)
-        self._tab_encoders.apply_config(self._cfg)
-        self._tab_joy.apply_config(self._cfg)
-        self._tab_sm.apply_config(self._cfg)
+        self._tab_input.apply_config(self._cfg)
         self._tab_profiles.apply_config(self._cfg)
         self._tab_vis.apply_config(self._cfg)
         self._sync_app_watcher()

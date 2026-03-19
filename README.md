@@ -42,13 +42,11 @@ SpacePad is a fully open-source input device designed for creative professionals
 
 A single application that serves as both the full configurator GUI and a background auto-layer switcher — no separate tray app needed.
 
-**Configuration tabs:**
-- **Matrix** — visual matrix grid editor, double-click any key to configure tap/hold/macro/type
-- **Layers** — add, remove, rename, reorder layers; toggle space mouse per layer
-- **Encoders** — set per-layer encoder modes and switch actions, global speed/invert
-- **Joystick** — speed, deadzone, axis inversion, switch action
-- **Space Mouse** — sensitivity, deadzone, Z-threshold, filter, acceleration, orbit timing, Z-mode
-- **Profiles** — app-to-layer mapping with live process scanner, default fallback layer, and real-time foreground app display
+**Configuration tabs (5 streamlined tabs, down from 7):**
+- **Matrix** — visual key grid with a side panel editor. Click any key to edit its tap/hold/macro/type inline; click "EDIT FULL..." for the complete key editor dialog with keystroke capture. Ghost positions (5 unused matrix slots) are visually dimmed and disabled
+- **Layers** — add, remove, rename layers; toggle space mouse per layer; encoder modes, switch actions, speed, and invert are configured here per-layer alongside the layer they belong to; plus tap/hold threshold, key repeat, and extra button settings
+- **Input** — joystick (speed, deadzone, axis inversion, click action) and space mouse (sensitivity, deadzone, Z-threshold, filter, acceleration curve, orbit hysteresis, Z-mode, zero calibration) in one place
+- **Profiles** — app-to-layer mapping with live process scanner, default fallback layer, real-time foreground app display, auto-switch toggle, and profile import/export
 - **Visualizer** — real-time key press heatmap, joystick XY plot, space mouse XYZ bar meters, orbit/pan state indicators, and boot health readout
 
 **Integrated tray features:**
