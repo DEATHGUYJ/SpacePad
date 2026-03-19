@@ -145,6 +145,8 @@ DEFAULT_CONFIG = {
     "key_repeat_enabled": True,
     "key_repeat_delay_ms":400,
     "key_repeat_rate_ms": 50,
+    "app_mappings":       [],
+    "default_layer":      0,
 }
 
 # ─────────────────────────────────────────────────────────────

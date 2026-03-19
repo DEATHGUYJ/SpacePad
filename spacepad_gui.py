@@ -14,15 +14,22 @@ from PySide6.QtWidgets import (
     QLabel, QPushButton, QSlider, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox,
     QRadioButton, QButtonGroup, QCheckBox, QListWidget, QListWidgetItem,
     QTextEdit, QSizePolicy, QFileDialog, QMessageBox, QInputDialog,
-    QStatusBar, QToolButton,
+    QStatusBar, QToolButton, QSystemTrayIcon, QMenu,
 )
 from PySide6.QtCore import (
     Qt, QThread, Signal, Slot, QTimer, QSize, QPointF, QRectF, QObject,
+    QSettings,
 )
 from PySide6.QtGui import (
     QPainter, QPen, QBrush, QColor, QFont, QPalette, QPixmap, QIcon,
-    QLinearGradient, QPainterPath, QFontDatabase,
+    QLinearGradient, QPainterPath, QFontDatabase, QAction, QImage,
 )
+
+try:
+    import psutil
+    PSUTIL_OK = True
+except ImportError:
+    PSUTIL_OK = False
 
 import serial
 import serial.tools.list_ports
@@ -852,6 +859,127 @@ class SerialManager(QObject):
         if not self.is_connected() and self._last_port:
             if self._last_port in self.list_ports():
                 self.connect_port(self._last_port)
+
+
+# ─────────────────────────────────────────────────────────────
+#  5b. APP WATCHER — foreground process monitor
+# ─────────────────────────────────────────────────────────────
+
+def _get_foreground_exe():
+    """Return the lowercase exe name of the foreground window, or ''."""
+    try:
+        import ctypes
+        from ctypes import wintypes
+        user32 = ctypes.windll.user32
+        hwnd = user32.GetForegroundWindow()
+        if not hwnd:
+            return ""
+        pid = wintypes.DWORD()
+        user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+        if pid.value and PSUTIL_OK:
+            try:
+                return psutil.Process(pid.value).name().lower()
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                return ""
+        return ""
+    except Exception:
+        return ""
+
+
+def _list_running_apps():
+    """Return sorted list of unique exe names currently running with visible windows."""
+    if not PSUTIL_OK:
+        return []
+    seen = set()
+    result = []
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+
+        # Callback collects PIDs of all visible, non-zero-size windows
+        pids = set()
+        WNDENUMPROC = ctypes.WINFUNCTYPE(wintypes.BOOL, wintypes.HWND, wintypes.LPARAM)
+        def _cb(hwnd, _):
+            if user32.IsWindowVisible(hwnd):
+                pid = wintypes.DWORD()
+                user32.GetWindowThreadProcessId(hwnd, ctypes.byref(pid))
+                if pid.value:
+                    pids.add(pid.value)
+            return True
+        user32.EnumWindows(WNDENUMPROC(_cb), 0)
+
+        for pid in pids:
+            try:
+                name = psutil.Process(pid).name().lower()
+                if name not in seen and not name.startswith("svchost"):
+                    seen.add(name)
+                    result.append(name)
+            except (psutil.NoSuchProcess, psutil.AccessDenied):
+                pass
+    except Exception:
+        # Fallback: just list all user processes
+        try:
+            for p in psutil.process_iter(["name"]):
+                name = (p.info["name"] or "").lower()
+                if name and name not in seen:
+                    seen.add(name)
+                    result.append(name)
+        except Exception:
+            pass
+    result.sort()
+    return result
+
+
+class AppWatcher(QThread):
+    """Monitors the foreground application and emits layer switch requests."""
+    layer_requested = Signal(int, str)    # (layer_index, exe_name)
+    foreground_changed = Signal(str)      # exe_name — for live display
+    no_match = Signal()                   # no mapping matched
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self._running = False
+        self._enabled = True
+        self._mappings = []          # list of {"exe": str, "layer": int}
+        self._default_layer = 0
+        self._current_exe = ""
+        self._current_layer = -1
+
+    def set_mappings(self, mappings, default_layer=0):
+        self._mappings = list(mappings) if mappings else []
+        self._default_layer = default_layer
+
+    def set_enabled(self, val):
+        self._enabled = bool(val)
+
+    def run(self):
+        self._running = True
+        while self._running:
+            if self._enabled:
+                exe = _get_foreground_exe()
+                if exe and exe != self._current_exe:
+                    self._current_exe = exe
+                    self.foreground_changed.emit(exe)
+                    matched = False
+                    for m in self._mappings:
+                        if m.get("exe", "").lower() == exe:
+                            target = m.get("layer", 0)
+                            if target != self._current_layer:
+                                self._current_layer = target
+                                self.layer_requested.emit(target, exe)
+                            matched = True
+                            break
+                    if not matched:
+                        if self._current_layer != self._default_layer:
+                            self._current_layer = self._default_layer
+                            self.layer_requested.emit(self._default_layer, "")
+                        self.no_match.emit()
+            self.msleep(500)
+
+    def stop(self):
+        self._running = False
 
 
 # ─────────────────────────────────────────────────────────────
@@ -2209,113 +2337,209 @@ class SpaceMouseTab(QWidget):
 
 
 class ProfilesTab(QWidget):
+    mappings_changed = Signal()    # emitted when mappings change so MainWindow can sync
+
     def __init__(self, serial_mgr, parent=None):
         super().__init__(parent)
         self.serial    = serial_mgr
-        self._profiles = {"mappings":[]}
+        self._cfg      = {}
         self._build()
-        self._load_profiles()
 
     def _build(self):
         layout = QVBoxLayout(self)
         layout.setContentsMargins(16, 16, 16, 16)
         layout.setSpacing(12)
 
-        card, inner = make_card("APPLICATION-AWARE LAYER SWITCHING")
+        # ── Live status card ──
+        status_card, status_inner = make_card("LIVE STATUS")
+        status_row = QHBoxLayout()
+        self._fg_label = QLabel("Foreground app:  —")
+        self._fg_label.setStyleSheet(
+            f"color: {T.TEXT}; font-size: 12px; font-family: 'Consolas', monospace;"
+        )
+        self._match_label = QLabel("")
+        self._match_label.setStyleSheet(
+            f"color: {T.TEXT_DIM}; font-size: 11px;"
+        )
+        status_row.addWidget(self._fg_label)
+        status_row.addSpacing(20)
+        status_row.addWidget(self._match_label)
+        status_row.addStretch()
+
+        self._auto_toggle = ToggleSwitch(True)
+        self._auto_toggle.toggled.connect(self._on_auto_toggle)
+        auto_lbl = QLabel("Auto-switch")
+        auto_lbl.setStyleSheet(f"color: {T.TEXT_MID}; font-size: 11px;")
+        status_row.addWidget(auto_lbl)
+        status_row.addWidget(self._auto_toggle)
+        status_inner.addLayout(status_row)
+        layout.addWidget(status_card)
+
+        # ── App mappings card ──
+        map_card, map_inner = make_card("APP → LAYER MAPPINGS")
         desc = QLabel(
-            "When a window title contains a keyword, the Pico switches to the specified layer.\n"
-            "Rules are checked top-to-bottom, first match wins. "
-            "The tray app (spacepad_tray.exe) applies these in the background."
+            "Assign applications to layers by executable name. "
+            "When the matched app is in the foreground, the Pico switches to that layer automatically. "
+            "Mappings are stored on the Pico and persist across reboots."
         )
         desc.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px; line-height: 1.6;")
         desc.setWordWrap(True)
-        inner.addWidget(desc)
+        map_inner.addWidget(desc)
 
         self._rule_list = QListWidget()
-        self._rule_list.setMinimumHeight(180)
-        inner.addWidget(self._rule_list)
+        self._rule_list.setMinimumHeight(140)
+        map_inner.addWidget(self._rule_list)
 
+        # ── Add rule row ──
         add_row = QHBoxLayout()
-        add_row.addWidget(QLabel("Title contains:"))
-        self._kw_edit = QLineEdit()
-        self._kw_edit.setPlaceholderText("e.g. fusion 360")
-        self._kw_edit.setFixedWidth(180)
-        add_row.addWidget(self._kw_edit)
+        add_row.addWidget(QLabel("Application:"))
+
+        self._app_combo = QComboBox()
+        self._app_combo.setFixedWidth(220)
+        self._app_combo.setEditable(True)
+        self._app_combo.lineEdit().setPlaceholderText("select or type exe name")
+        add_row.addWidget(self._app_combo)
+
+        scan_btn = QPushButton("SCAN")
+        scan_btn.setToolTip("Scan for currently running applications")
+        scan_btn.setFixedWidth(60)
+        scan_btn.clicked.connect(self._scan_apps)
+        add_row.addWidget(scan_btn)
+
         add_row.addWidget(QLabel("→ Layer:"))
         self._layer_combo = QComboBox()
         self._layer_combo.setFixedWidth(160)
-        self._layer_combo.addItem("0: Default")   # placeholder before config loads
+        self._layer_combo.addItem("0: Default")
         add_row.addWidget(self._layer_combo)
-        add_btn    = accent_btn("ADD RULE")
+
+        add_btn    = accent_btn("ADD")
         remove_btn = danger_btn("REMOVE")
         add_btn.clicked.connect(self._add_rule)
         remove_btn.clicked.connect(self._remove_rule)
         add_row.addWidget(add_btn)
         add_row.addWidget(remove_btn)
         add_row.addStretch()
-        inner.addLayout(add_row)
+        map_inner.addLayout(add_row)
 
-        save_row = QHBoxLayout()
-        save_btn = success_btn("SAVE PROFILE RULES")
-        save_btn.clicked.connect(self._save_profiles)
-        save_row.addWidget(save_btn)
-        save_note = QLabel("Saved to profiles.json (read by tray app)")
-        save_note.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 10px;")
-        save_row.addWidget(save_note)
-        save_row.addStretch()
-        inner.addLayout(save_row)
-        layout.addWidget(card)
+        # ── Default layer ──
+        def_row = QHBoxLayout()
+        def_row.addWidget(QLabel("Default layer (no match):"))
+        self._default_combo = QComboBox()
+        self._default_combo.setFixedWidth(160)
+        self._default_combo.addItem("0: Default")
+        self._default_combo.currentIndexChanged.connect(self._on_default_changed)
+        def_row.addWidget(self._default_combo)
+        def_row.addStretch()
+        map_inner.addLayout(def_row)
+
+        layout.addWidget(map_card)
         layout.addStretch()
 
-    def _load_profiles(self):
-        try:
-            with open("profiles.json") as f:
-                self._profiles = json.load(f)
-        except Exception:
-            self._profiles = {"mappings":[]}
+    def _scan_apps(self):
+        """Populate the app combo with currently running applications."""
+        apps = _list_running_apps()
+        current = self._app_combo.currentText()
+        self._app_combo.clear()
+        self._app_combo.addItems(apps)
+        if current:
+            self._app_combo.setCurrentText(current)
+
+    def apply_config(self, cfg):
+        """Update layer combos and rule list from Pico config."""
+        self._cfg = cfg
+        layers = cfg.get("layers", [])
+
+        # Update layer combos
+        for combo in (self._layer_combo, self._default_combo):
+            prev = combo.currentIndex()
+            combo.blockSignals(True)
+            combo.clear()
+            for i, l in enumerate(layers):
+                combo.addItem(f"{i}: {l.get('name','')}")
+            if 0 <= prev < combo.count():
+                combo.setCurrentIndex(prev)
+            combo.blockSignals(False)
+
+        # Set default layer
+        default_layer = cfg.get("default_layer", 0)
+        if 0 <= default_layer < self._default_combo.count():
+            self._default_combo.blockSignals(True)
+            self._default_combo.setCurrentIndex(default_layer)
+            self._default_combo.blockSignals(False)
+
+        # Load mappings from Pico config
         self._refresh_list()
 
     def _refresh_list(self):
         self._rule_list.clear()
-        for m in self._profiles.get("mappings",[]):
-            self._rule_list.addItem(
-                f"  '{m.get('app','')}' → Layer {m.get('layer',0)}"
-            )
-
-    def apply_config(self, cfg):
-        """Update layer combo with current layer names from Pico config."""
-        layers = cfg.get("layers", [])
-        prev = self._layer_combo.currentIndex()
-        self._layer_combo.blockSignals(True)
-        self._layer_combo.clear()
-        for i, l in enumerate(layers):
-            self._layer_combo.addItem(f"{i}: {l.get('name','')}")
-        if 0 <= prev < self._layer_combo.count():
-            self._layer_combo.setCurrentIndex(prev)
-        self._layer_combo.blockSignals(False)
+        mappings = self._cfg.get("app_mappings", [])
+        layers = self._cfg.get("layers", [])
+        for m in mappings:
+            exe = m.get("exe", "")
+            idx = m.get("layer", 0)
+            lname = layers[idx]["name"] if idx < len(layers) else f"#{idx}"
+            self._rule_list.addItem(f"  {exe}  →  Layer {idx}: {lname}")
 
     def _add_rule(self):
-        kw = self._kw_edit.text().strip()
-        if not kw: return
+        exe = self._app_combo.currentText().strip().lower()
+        if not exe:
+            return
         layer_idx = self._layer_combo.currentIndex()
-        self._profiles.setdefault("mappings", []).append(
-            {"app": kw, "layer": layer_idx}
-        )
+        mappings = self._cfg.setdefault("app_mappings", [])
+        # Replace existing mapping for same exe
+        mappings[:] = [m for m in mappings if m.get("exe","").lower() != exe]
+        mappings.append({"exe": exe, "layer": layer_idx})
         self._refresh_list()
-        self._kw_edit.clear()
+        self._app_combo.clearEditText()
+        # Send to Pico
+        self.serial.send({"action":"set","key":"app_mappings","value":mappings})
+        self.mappings_changed.emit()
 
     def _remove_rule(self):
         row = self._rule_list.currentRow()
-        if row >= 0:
-            self._profiles["mappings"].pop(row)
+        mappings = self._cfg.get("app_mappings", [])
+        if 0 <= row < len(mappings):
+            mappings.pop(row)
             self._refresh_list()
+            self.serial.send({"action":"set","key":"app_mappings","value":mappings})
+            self.mappings_changed.emit()
 
-    def _save_profiles(self):
-        try:
-            with open("profiles.json","w") as f:
-                json.dump(self._profiles, f, indent=2)
-        except Exception as e:
-            QMessageBox.critical(self, "Error", f"Save failed: {e}")
+    def _on_default_changed(self, idx):
+        self._cfg["default_layer"] = idx
+        self.serial.send({"action":"set","key":"default_layer","value":idx})
+        self.mappings_changed.emit()
+
+    def _on_auto_toggle(self, val):
+        # Emitted to MainWindow to enable/disable AppWatcher
+        self.mappings_changed.emit()
+
+    def is_auto_enabled(self):
+        return self._auto_toggle.isChecked()
+
+    def update_foreground(self, exe):
+        """Called by MainWindow when AppWatcher reports a foreground change."""
+        self._fg_label.setText(f"Foreground app:  {exe}")
+
+    def update_match(self, layer_idx, layer_name, exe):
+        """Called by MainWindow when a mapping matches."""
+        if exe:
+            self._match_label.setText(
+                f"→ Matched: Layer {layer_idx}: {layer_name}"
+            )
+            self._match_label.setStyleSheet(
+                f"color: {T.GREEN}; font-size: 11px; font-weight: 600;"
+            )
+        else:
+            self._match_label.setText("→ No match (using default layer)")
+            self._match_label.setStyleSheet(
+                f"color: {T.TEXT_DIM}; font-size: 11px;"
+            )
+
+    def get_mappings(self):
+        return self._cfg.get("app_mappings", [])
+
+    def get_default_layer(self):
+        return self._cfg.get("default_layer", 0)
 
 
 class VisualiserTab(QWidget):
@@ -2654,19 +2878,97 @@ class MainWindow(QMainWindow):
         self.setWindowTitle("SpacePad Configurator")
         self.setMinimumSize(860, 760)
         self._cfg = {}
+        self._unsaved = False
+        self._really_quit = False
+
+        self._settings = QSettings("SpacePad", "Configurator")
 
         self.serial = SerialManager(self)
         self.serial.message_received.connect(self._on_message)
         self.serial.connected.connect(self._on_connected)
         self.serial.disconnected.connect(self._on_disconnected)
 
+        # App watcher (foreground process monitor)
+        self._app_watcher = AppWatcher(self)
+        self._app_watcher.layer_requested.connect(self._on_app_layer_requested)
+        self._app_watcher.foreground_changed.connect(self._on_foreground_changed)
+        self._app_watcher.no_match.connect(self._on_no_match)
+
         self._build_ui()
+        self._build_tray_icon()
         self._refresh_ports()
+        self._app_watcher.start()
 
         # Reconnect watchdog timer handled by SerialManager
         self._save_flash_timer = QTimer(self)
         self._save_flash_timer.setSingleShot(True)
         self._save_flash_timer.timeout.connect(self._reset_save_btn)
+
+        # Auto-connect to last known port
+        QTimer.singleShot(500, self._try_auto_connect)
+
+    def _build_tray_icon(self):
+        """Create system tray icon with right-click menu."""
+        self._tray = QSystemTrayIcon(self)
+        self._tray.setIcon(self._make_tray_icon())
+        self._tray.setToolTip("SpacePad — Disconnected")
+        self._tray.activated.connect(self._on_tray_activated)
+
+        tray_menu = QMenu()
+        self._tray_open_action = QAction("Open SpacePad", self)
+        self._tray_open_action.triggered.connect(self._show_window)
+        tray_menu.addAction(self._tray_open_action)
+
+        tray_menu.addSeparator()
+
+        self._tray_layer_label = QAction("Layer: —", self)
+        self._tray_layer_label.setEnabled(False)
+        tray_menu.addAction(self._tray_layer_label)
+
+        self._tray_app_label = QAction("App: —", self)
+        self._tray_app_label.setEnabled(False)
+        tray_menu.addAction(self._tray_app_label)
+
+        tray_menu.addSeparator()
+
+        self._tray_auto_action = QAction("Auto-switching enabled", self)
+        self._tray_auto_action.setCheckable(True)
+        self._tray_auto_action.setChecked(True)
+        self._tray_auto_action.triggered.connect(self._on_tray_auto_toggle)
+        tray_menu.addAction(self._tray_auto_action)
+
+        self._tray_minimized_action = QAction("Launch minimized to tray", self)
+        self._tray_minimized_action.setCheckable(True)
+        self._tray_minimized_action.setChecked(
+            self._settings.value("launch_minimized", False, type=bool)
+        )
+        self._tray_minimized_action.triggered.connect(self._on_launch_minimized_toggle)
+        tray_menu.addAction(self._tray_minimized_action)
+
+        tray_menu.addSeparator()
+
+        quit_action = QAction("Quit", self)
+        quit_action.triggered.connect(self._real_quit)
+        tray_menu.addAction(quit_action)
+
+        self._tray.setContextMenu(tray_menu)
+        self._tray.show()
+
+    @staticmethod
+    def _make_tray_icon(connected=False):
+        """Generate a small tray icon — blue grid when idle, green when connected."""
+        img = QImage(64, 64, QImage.Format_ARGB32)
+        img.fill(QColor(0, 0, 0, 0))
+        p = QPainter(img)
+        p.setRenderHint(QPainter.Antialiasing)
+        color = QColor(T.GREEN) if connected else QColor(T.BLUE)
+        for r in range(3):
+            for c in range(3):
+                p.setBrush(color)
+                p.setPen(Qt.NoPen)
+                p.drawRoundedRect(6 + c * 19, 6 + r * 19, 14, 14, 3, 3)
+        p.end()
+        return QIcon(QPixmap.fromImage(img))
 
     def _build_ui(self):
         central = QWidget()
@@ -2760,6 +3062,7 @@ class MainWindow(QMainWindow):
         self._tab_joy     = JoystickTab(self.serial)
         self._tab_sm      = SpaceMouseTab(self.serial)
         self._tab_profiles= ProfilesTab(self.serial)
+        self._tab_profiles.mappings_changed.connect(self._sync_app_watcher)
         self._tab_vis     = VisualiserTab()
         self._tab_vis.passthrough_changed.connect(self._on_passthrough_changed)
 
@@ -2796,6 +3099,15 @@ class MainWindow(QMainWindow):
         if current in ports:
             self._port_combo.setCurrentText(current)
 
+    def _try_auto_connect(self):
+        last = self._settings.value("last_port", "")
+        if last and not self.serial.is_connected():
+            ports = self.serial.list_ports()
+            if last in ports:
+                self._port_combo.setCurrentText(last)
+                self._toggle_connect()
+                self._log(f"Auto-connecting to {last}…")
+
     def _toggle_connect(self):
         if self.serial.is_connected():
             self.serial.send({"action":"unsubscribe"})
@@ -2805,6 +3117,7 @@ class MainWindow(QMainWindow):
             if not port:
                 self._log("No port selected.")
                 return
+            self._settings.setValue("last_port", port)
             self.serial.connect_port(port)
             QTimer.singleShot(400, lambda: (
                 self.serial.send({"action":"subscribe"}),
@@ -2819,20 +3132,122 @@ class MainWindow(QMainWindow):
             f"background: {T.RED_DIM}; color: {T.RED}; border: 1px solid {T.RED_DIM};"
             f" border-radius: 6px; padding: 5px 14px; font-weight: 700;"
         )
+        self._tray.setIcon(self._make_tray_icon(connected=True))
+        self._tray.setToolTip(f"SpacePad — Connected ({port})")
         self._log(f"Connected to {port}")
 
     def _on_disconnected(self):
-        # If passthrough was active, turn it off so Pico doesn't stay suppressed
         if self._tab_vis._passthrough:
             self._tab_vis._pt_toggle.setChecked(False)
-        # Reset space mouse zero label
         self._tab_sm._zero_lbl.setText("")
         self._status_dot.setStyleSheet(f"color: {T.RED}; font-size: 16px; border: none;")
         self._status_lbl.setText("Disconnected")
         self._conn_btn.setText("CONNECT")
         self._conn_btn.setProperty("accent", True)
         self._conn_btn.setStyleSheet("")
+        self._tray.setIcon(self._make_tray_icon(connected=False))
+        self._tray.setToolTip("SpacePad — Disconnected")
         self._log("Disconnected — watching for reconnect…")
+
+    # ── Tray icon ────────────────────────────────────────────
+
+    def _on_tray_activated(self, reason):
+        if reason == QSystemTrayIcon.ActivationReason.Trigger:
+            self._show_window()
+
+    def _show_window(self):
+        self.showNormal()
+        self.activateWindow()
+        self.raise_()
+
+    def _on_tray_auto_toggle(self, checked):
+        self._app_watcher.set_enabled(checked)
+        self._tab_profiles._auto_toggle.setChecked(checked)
+
+    def _on_launch_minimized_toggle(self, checked):
+        self._settings.setValue("launch_minimized", checked)
+
+    def _real_quit(self):
+        if self._unsaved:
+            ret = QMessageBox.question(
+                self, "Unsaved Changes",
+                "You have unsaved changes that will be lost if you quit.\n\n"
+                "Save to Pico before quitting?",
+                QMessageBox.Save | QMessageBox.Discard | QMessageBox.Cancel,
+            )
+            if ret == QMessageBox.Save:
+                self._save_to_pico()
+                QTimer.singleShot(1000, self._force_quit)
+                return
+            elif ret == QMessageBox.Cancel:
+                return
+        self._force_quit()
+
+    def _force_quit(self):
+        self._really_quit = True
+        self._app_watcher.stop()
+        self._app_watcher.wait(1000)
+        self.serial.disconnect_port()
+        self._tray.hide()
+        QApplication.instance().quit()
+
+    def closeEvent(self, event):
+        if self._really_quit:
+            event.accept()
+            return
+        # Minimize to tray instead of closing
+        event.ignore()
+        self.hide()
+        self._tray.showMessage(
+            "SpacePad",
+            "Running in the background. Right-click the tray icon to quit.",
+            QSystemTrayIcon.Information,
+            2000,
+        )
+
+    # ── App watcher integration ──────────────────────────────
+
+    def _sync_app_watcher(self):
+        """Sync app watcher with current mappings from Profiles tab."""
+        mappings = self._tab_profiles.get_mappings()
+        default  = self._tab_profiles.get_default_layer()
+        enabled  = self._tab_profiles.is_auto_enabled()
+        self._app_watcher.set_mappings(mappings, default)
+        self._app_watcher.set_enabled(enabled)
+        self._tray_auto_action.setChecked(enabled)
+        self._mark_unsaved()
+
+    @Slot(int, str)
+    def _on_app_layer_requested(self, layer_idx, exe):
+        """AppWatcher wants to switch layers."""
+        if self.serial.is_connected():
+            self.serial.send({"action":"set_active_layer","index":layer_idx})
+            layers = self._cfg.get("layers", [])
+            lname = layers[layer_idx]["name"] if layer_idx < len(layers) else f"#{layer_idx}"
+            self._tray_layer_label.setText(f"Layer: {layer_idx}: {lname}")
+            self._tray_app_label.setText(f"App: {exe}" if exe else "App: (default)")
+            self._tray.setToolTip(f"SpacePad — Layer {layer_idx}: {lname}" + (f" ({exe})" if exe else ""))
+            self._tab_profiles.update_match(layer_idx, lname, exe)
+
+    @Slot(str)
+    def _on_foreground_changed(self, exe):
+        self._tab_profiles.update_foreground(exe)
+        self._tray_app_label.setText(f"App: {exe}")
+
+    @Slot()
+    def _on_no_match(self):
+        self._tab_profiles.update_match(0, "", "")
+
+    # ── Unsaved changes tracking ─────────────────────────────
+
+    def _mark_unsaved(self):
+        if not self._unsaved:
+            self._unsaved = True
+            self.setWindowTitle("SpacePad Configurator  ●")
+
+    def _mark_saved(self):
+        self._unsaved = False
+        self.setWindowTitle("SpacePad Configurator")
 
     # ── Message handler ───────────────────────────────────────
 
@@ -2891,6 +3306,7 @@ class MainWindow(QMainWindow):
                 f" border-radius: 6px; padding: 5px 16px; font-weight: 700; font-size: 11px;"
             )
             self._save_flash_timer.start(2000)
+            self._mark_saved()
             self._log("✓ Saved to Pico flash.")
 
         elif ev == "save_failed":
@@ -2918,6 +3334,7 @@ class MainWindow(QMainWindow):
             self._log(f"Joystick calibrated — centre X:{cx}  Y:{cy}")
 
         elif ev == "ack":
+            self._mark_unsaved()
             self._log(f"✓ {msg.get('key')} = {msg.get('value')}")
 
         elif ev == "ack_layer_prop":
@@ -2927,7 +3344,7 @@ class MainWindow(QMainWindow):
         elif "error" in msg:
             self._log(f"✗ {msg}")
 
-    def _apply_config(self):
+    def _apply_config(self, from_boot=False):
         self._tab_matrix.apply_config(self._cfg)
         self._tab_layers.apply_config(self._cfg)
         self._tab_encoders.apply_config(self._cfg)
@@ -2935,6 +3352,8 @@ class MainWindow(QMainWindow):
         self._tab_sm.apply_config(self._cfg)
         self._tab_profiles.apply_config(self._cfg)
         self._tab_vis.apply_config(self._cfg)
+        self._sync_app_watcher()
+        self._mark_saved()
         self._log("Config loaded from Pico.")
 
     def _on_layer_changed(self, idx, name):
@@ -3019,13 +3438,24 @@ class MainWindow(QMainWindow):
 def main():
     app = QApplication(sys.argv)
     app.setApplicationName("SpacePad Configurator")
+    app.setOrganizationName("SpacePad")
     app.setStyleSheet(QSS)
 
-    # Enable HiDPI
-    app.setAttribute(Qt.AA_UseHighDpiPixmaps, True)
+    # Prevent quitting when last window is hidden to tray
+    app.setQuitOnLastWindowClosed(False)
 
     window = MainWindow()
-    window.show()
+
+    # Check for --minimized flag or saved preference
+    settings = QSettings("SpacePad", "Configurator")
+    launch_minimized = "--minimized" in sys.argv or settings.value("launch_minimized", False, type=bool)
+
+    if launch_minimized:
+        # Start hidden — tray icon is already visible
+        window.hide()
+    else:
+        window.show()
+
     sys.exit(app.exec())
 
 

@@ -2,9 +2,9 @@
 
 **A 20-key macropad (non-standard 5×5 matrix) with an integrated 3D space mouse, dual rotary encoders, analog joystick, and OLED display — powered by a Raspberry Pi Pico and CircuitPython.**
 
-SpacePad is a fully open-source input device designed for creative professionals, CAD users, and anyone who wants deep keyboard/mouse customization. It combines a 20-key matrix, a CJMCU-90393 (MLX90393) magnetometer-based space mouse for 3D orbit/pan/zoom driven by a custom-built I²C driver, two clickable rotary encoders, an analog joystick for mouse control, and a 128×32 OLED status display — all configurable through a polished desktop GUI over USB serial.
+SpacePad is a fully open-source input device designed for creative professionals, CAD users, and anyone who wants deep keyboard/mouse customization. It combines a 20-key matrix, a CJMCU-90393 (MLX90393) magnetometer-based space mouse for 3D orbit/pan/zoom driven by a custom-built I²C driver, two clickable rotary encoders, an analog joystick for mouse control, and a 128×32 OLED status display — all configurable through a single desktop app that doubles as a system tray auto-layer switcher.
 
-> **This project is a fork of [jeevan8232/macrokeyboard](https://github.com/jeevan8232/macrokeyboard)** — the original hardware design, 3D printable files, and keycap STLs are from that project. SpacePad builds on top of it with a fully rewritten firmware, a desktop configurator GUI, a system tray auto-layer switcher, OLED support, and a custom magnetometer driver.
+> **This project is a fork of [jeevan8232/macrokeyboard](https://github.com/jeevan8232/macrokeyboard)** — the original hardware design, 3D printable files, and keycap STLs are from that project. SpacePad builds on top of it with a fully rewritten firmware, a desktop configurator GUI with integrated tray app, OLED support, and a custom magnetometer driver.
 
 **3D print files:** https://www.thingiverse.com/thing:7293580
 
@@ -35,28 +35,33 @@ SpacePad is a fully open-source input device designed for creative professionals
 - JSON serial protocol for full bidirectional communication with the GUI
 - Telemetry streaming at 20 Hz for live joystick and space mouse visualization
 - Passthrough mode for the GUI visualizer (reports key events without sending HID)
+- App-to-layer mappings stored on Pico alongside all other settings
 - Performance-optimized hot path: flat settings cache, pre-allocated I²C buffers, pre-built JSON strings, dispatch tables instead of elif chains
 
-### Desktop GUI (`spacepad_gui.py`)
-- Dark blue themed PySide6 application with seven configuration tabs:
-  - **Matrix** — visual matrix grid editor, double-click any key to configure tap/hold/macro/type
-  - **Layers** — add, remove, rename, reorder layers; toggle space mouse per layer
-  - **Encoders** — set per-layer encoder modes and switch actions, global speed/invert
-  - **Joystick** — speed, deadzone, axis inversion, switch action
-  - **Space Mouse** — sensitivity, deadzone, Z-threshold, filter, acceleration, orbit timing, Z-mode
-  - **Profiles** — import/export full configurations as JSON files
-  - **Visualizer** — real-time key press heatmap, joystick XY plot, space mouse XYZ bar meters, orbit/pan state indicators, and boot health readout
-- Auto-detection of Pico serial port with one-click connect
-- Save configuration to Pico flash from the GUI
-- Key editor dialog with support for all key types: normal, momentary layer, mouse hold, encoder modifier, and multi-step macros
-- Live status bar with serial event log
+### Desktop App (`spacepad_gui.py`)
 
-### Tray App (`spacepad_tray.py`)
-- Windows system tray application that automatically switches SpacePad layers based on the active window title
-- Define keyword → layer mappings in `profiles.json` (e.g., "blender" → layer 1, "photoshop" → layer 2)
-- Tray icon changes color when a mapping is active (green) vs idle (blue)
-- Reconnects automatically if the Pico is unplugged and re-plugged
-- Minimal Tk-based port selector dialog
+A single application that serves as both the full configurator GUI and a background auto-layer switcher — no separate tray app needed.
+
+**Configuration tabs:**
+- **Matrix** — visual matrix grid editor, double-click any key to configure tap/hold/macro/type
+- **Layers** — add, remove, rename, reorder layers; toggle space mouse per layer
+- **Encoders** — set per-layer encoder modes and switch actions, global speed/invert
+- **Joystick** — speed, deadzone, axis inversion, switch action
+- **Space Mouse** — sensitivity, deadzone, Z-threshold, filter, acceleration, orbit timing, Z-mode
+- **Profiles** — app-to-layer mapping with live process scanner, default fallback layer, and real-time foreground app display
+- **Visualizer** — real-time key press heatmap, joystick XY plot, space mouse XYZ bar meters, orbit/pan state indicators, and boot health readout
+
+**Integrated tray features:**
+- Closing the window minimizes to system tray instead of quitting
+- Automatically switches Pico layers based on the foreground application's executable name (detected via `psutil`, not fragile window title matching)
+- Process scanner in the Profiles tab — click SCAN to see running apps, pick one, assign a layer
+- Default fallback layer when no app mapping matches
+- Live status display showing the current foreground app and matched layer
+- Tray icon tooltip shows current layer and matched app at a glance
+- Tray right-click menu: open GUI, current layer/app info, toggle auto-switching, launch minimized option, quit
+- Auto-connect to the last known COM port on startup
+- Unsaved changes warning before quitting
+- Launch with `--minimized` flag or enable "Launch minimized to tray" in the tray menu to start straight to tray
 
 ---
 
@@ -89,7 +94,7 @@ A detailed SVG wiring diagram for the key matrix is included as [`matrix_wiring.
   - `adafruit_ssd1306` (OLED driver)
   - `adafruit_bus_device` (I²C helpers for OLED)
   - No magnetometer library needed — the firmware includes a custom-built I²C driver for the CJMCU-90393
-- **Python 3.10+** on your PC for the GUI and tray app
+- **Python 3.10+** on your PC for the configurator app
 
 ### Pico Firmware Setup
 
@@ -98,36 +103,37 @@ A detailed SVG wiring diagram for the key matrix is included as [`matrix_wiring.
 3. Copy `circuitpython/boot.py` to the root of `CIRCUITPY` — this remounts the filesystem as writable so the firmware can save settings.
 4. Copy `circuitpython/code.py` to the root of `CIRCUITPY` — the firmware starts automatically.
 
-### Desktop Software
+### Desktop App
 
-Install the Python dependencies:
-
-```bash
-pip install PySide6 pyserial
-```
-
-Run the configurator:
+Install dependencies and run:
 
 ```bash
+pip install -r requirements.txt
 python spacepad_gui.py
 ```
 
-For the auto-layer-switching tray app (Windows only):
+Or install manually:
 
 ```bash
-pip install pystray pillow pyserial pywin32
-python spacepad_tray.py
+pip install PySide6 pyserial psutil
+python spacepad_gui.py
 ```
 
-### Building Standalone Executables (Windows)
+To start minimized to the system tray:
 
-Run the included build script to create portable `.exe` files using PyInstaller:
+```bash
+python spacepad_gui.py --minimized
+```
+
+### Building a Standalone Executable (Windows)
+
+Run the included build script to create a portable `.exe`:
 
 ```bash
 build.bat
 ```
 
-This produces `SpacePad Configurator.exe` and `SpacePad Tray.exe` in the `dist/` folder.
+This produces `SpacePad Configurator.exe` in the `dist/` folder — a single executable that handles both configuration and background auto-layer switching.
 
 ---
 
@@ -135,9 +141,8 @@ This produces `SpacePad Configurator.exe` and `SpacePad Tray.exe` in the `dist/`
 
 ### Connecting
 1. Plug the Pico in via USB.
-2. Open `spacepad_gui.py` (or the built `.exe`).
-3. Select the Pico's COM port from the dropdown and click **Connect**.
-4. The GUI fetches the current configuration from the Pico automatically.
+2. Open SpacePad Configurator. It auto-connects to the last known port, or select one manually and click **Connect**.
+3. The GUI fetches the current configuration from the Pico automatically.
 
 ### Configuring Keys
 - Go to the **Matrix** tab and double-click any key in the matrix grid.
@@ -154,19 +159,15 @@ This produces `SpacePad Configurator.exe` and `SpacePad Tray.exe` in the `dist/`
 - The Z axis can be configured for scroll-wheel zoom or middle-button vertical pan.
 - Enable the space mouse per-layer in the Layers tab — it only activates on layers where you need it.
 
-### Tray App (Auto Layer Switching)
-1. Edit `profiles.json` next to the tray app:
-   ```json
-   {
-     "port": "COM3",
-     "enabled": true,
-     "mappings": [
-       {"app": "blender", "layer": 1},
-       {"app": "photoshop", "layer": 2}
-     ]
-   }
-   ```
-2. Run the tray app. It monitors the active window title and sends layer-switch commands to the Pico when a keyword matches.
+### Auto Layer Switching
+1. Go to the **Profiles** tab.
+2. Click **SCAN** to see a list of currently running applications.
+3. Select an app (e.g., `blender.exe`), choose a layer, and click **ADD**.
+4. Set a **default layer** for when no mapping matches.
+5. Click **Save to Pico** — mappings are stored on the Pico alongside all other settings.
+6. Close the window — the app minimizes to the system tray and continues switching layers automatically based on the foreground application.
+
+The live status area in the Profiles tab shows the current foreground app and which layer it matched, so you can verify your mappings are working in real time.
 
 ---
 
@@ -220,9 +221,9 @@ SpacePad/
 │   ├── stl/                 # 3D printable parts (keycaps, case, spacemouse)
 │   └── step/                # STEP assembly file
 ├── fusion360/               # Fusion 360 source project
-├── spacepad_gui.py          # Desktop configurator GUI (PySide6)
-├── spacepad_tray.py         # System tray auto-layer switcher (Windows)
+├── spacepad_gui.py          # Desktop app — configurator + system tray
 ├── build.bat                # PyInstaller build script for Windows .exe
+├── requirements.txt         # Python dependencies
 ├── matrix_wiring.svg        # Key matrix wiring diagram
 ├── spacepad_setup_guide.pdf # Hardware assembly and setup guide (PDF)
 └── LICENSE                  # GNU GPL v3
