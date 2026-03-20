@@ -126,6 +126,7 @@ DEFAULT_CONFIG = {
     "sm_deadzone":        100.0,
     "sm_z_threshold":     100.0,
     "sm_filter":          0.25,
+    "sm_adapt":           0.003,
     "sm_accel":           True,
     "sm_accel_curve":     2.0,
     "sm_z_mode":          "ZOOM",
@@ -159,7 +160,7 @@ class _C:
     """Flat cache of all settings accessed in the hot path."""
     __slots__ = (
         "sm_sensitivity","sm_deadzone","sm_z_threshold","sm_filter",
-        "sm_accel","sm_accel_curve","sm_z_mode","sm_inv_s10",
+        "sm_adapt","sm_accel","sm_accel_curve","sm_z_mode","sm_inv_s10",
         "sm_orbit_enter","sm_orbit_exit","sm_active",
         "joy_deadzone","joy_speed","joy_invert_x","joy_invert_y",
         "enc1_speed","enc1_invert","enc2_speed","enc2_invert",
@@ -175,6 +176,7 @@ def _sync_cache():
     SC.sm_deadzone       = cfg["sm_deadzone"]
     SC.sm_z_threshold    = cfg["sm_z_threshold"]
     SC.sm_filter         = max(0.01, min(1.0, cfg["sm_filter"]))
+    SC.sm_adapt          = max(0.0, min(0.02, cfg.get("sm_adapt", 0.003)))
     SC.sm_accel          = cfg["sm_accel"]
     SC.sm_accel_curve    = max(1.0, cfg["sm_accel_curve"])
     SC.sm_z_mode         = cfg["sm_z_mode"]
@@ -488,10 +490,27 @@ class SpaceMouse:
         self._zoom_accum  = 0.0
 
     def update(self, raw_x, raw_y, raw_z, now):
-        alpha = SC.sm_filter
-        self.fx += alpha * ((raw_x - _mlx_ox) - self.fx)
-        self.fy += alpha * ((raw_y - _mlx_oy) - self.fy)
-        self.fz += alpha * ((raw_z - _mlx_oz) - self.fz)
+        base  = SC.sm_filter   # minimum alpha — user's "smoothness" setting
+        adapt = SC.sm_adapt    # how aggressively alpha scales with movement
+
+        # X axis — adaptive alpha based on deviation from filtered value
+        dx = (raw_x - _mlx_ox) - self.fx
+        ax = base + abs(dx) * adapt
+        if ax > 0.8: ax = 0.8
+        self.fx += ax * dx
+
+        # Y axis
+        dy = (raw_y - _mlx_oy) - self.fy
+        ay = base + abs(dy) * adapt
+        if ay > 0.8: ay = 0.8
+        self.fy += ay * dy
+
+        # Z axis
+        dz = (raw_z - _mlx_oz) - self.fz
+        az = base + abs(dz) * adapt
+        if az > 0.8: az = 0.8
+        self.fz += az * dz
+
         self._process(now)
 
     def _accel(self, v, dz, inv_sens10):
