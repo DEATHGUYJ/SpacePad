@@ -79,7 +79,7 @@ A single application that serves as both the full configurator GUI and a backgro
 | Joystick Y axis | GP26 | ADC |
 | Joystick X axis | GP27 | ADC |
 
-A detailed SVG wiring diagram for the key matrix is included as [`matrix_wiring.svg`](matrix_wiring.svg).
+A detailed wiring diagram for the key matrix is included in the [setup guide PDF](spacepad_setup_guide.pdf).
 
 ---
 
@@ -222,8 +222,7 @@ SpacePad/
 ├── spacepad_gui.py          # Desktop app — configurator + system tray
 ├── build.bat                # PyInstaller build script for Windows .exe
 ├── requirements.txt         # Python dependencies
-├── matrix_wiring.svg        # Key matrix wiring diagram
-├── spacepad_setup_guide.pdf # Hardware assembly and setup guide (PDF)
+├── spacepad_setup_guide.pdf # Hardware assembly, setup guide, and wiring diagram
 └── LICENSE                  # GNU GPL v3
 ```
 
@@ -237,7 +236,7 @@ SpacePad/
 | Mechanical key switches | 20 | MX-compatible or equivalent |
 | Signal diodes (1N4148) | 20 | One per key for matrix isolation |
 | Rotary encoders with switch | 2 | Standard incremental with push button |
-| Analog joystick module | 1 | Dual-axis with click (e.g., KY-023) |
+| Analog joystick module | 1 | PS2-style dual-axis with click (e.g., KY-023) |
 | CJMCU-90393 magnetometer | 1 | MLX90393-based breakout, I²C address 0x0C, custom driver (no library needed). **Solder the CS and PU jumpers on the back of the board** to enable I²C mode and pull-ups |
 | Neodymium magnet | 1 | Mounted above the CJMCU-90393 on a lever/spring |
 | SSD1306 OLED 128×32 | 1 | I²C, address 0x3C |
