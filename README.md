@@ -12,6 +12,18 @@ SpacePad is a fully open-source input device designed for creative professionals
 
 ---
 
+## Screenshots
+
+**Matrix tab** — click any key to edit in the side panel. Ghost positions are dimmed. Full editor dialog available via "EDIT FULL..."
+
+![Matrix Tab](screenshots/matrix_tab.png)
+
+**Profiles tab** — scan running apps, assign to layers, live foreground display. Mappings stored on Pico.
+
+![Profiles Tab](screenshots/profiles_tab.png)
+
+---
+
 ## Features
 
 ### Hardware
@@ -223,6 +235,7 @@ SpacePad/
 ├── build.bat                # PyInstaller build script for Windows .exe
 ├── requirements.txt         # Python dependencies
 ├── spacepad_setup_guide.pdf # Hardware assembly, setup guide, and wiring diagram
+├── screenshots/             # GUI screenshots for README
 └── LICENSE                  # GNU GPL v3
 ```
 
