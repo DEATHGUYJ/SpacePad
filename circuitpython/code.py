@@ -163,8 +163,9 @@ class _C:
         "sm_orbit_enter","sm_orbit_exit","sm_active",
         "joy_deadzone","joy_speed","joy_invert_x","joy_invert_y",
         "enc1_speed","enc1_invert","enc2_speed","enc2_invert",
-        "tap_hold_ms","key_repeat_enabled",
-        "key_repeat_delay","key_repeat_rate",
+        "tap_hold_ms","tap_hold_s","key_repeat_enabled",
+        "key_repeat_delay","key_repeat_delay_s",
+        "key_repeat_rate","key_repeat_rate_s",
     )
 
 SC = _C()   # single cache instance
@@ -190,9 +191,12 @@ def _sync_cache():
     SC.enc2_speed        = cfg["enc2_speed"]
     SC.enc2_invert       = cfg["enc2_invert"]
     SC.tap_hold_ms       = cfg["tap_hold_ms"]
+    SC.tap_hold_s        = cfg["tap_hold_ms"] * 0.001
     SC.key_repeat_enabled= cfg["key_repeat_enabled"]
     SC.key_repeat_delay  = cfg["key_repeat_delay_ms"]
+    SC.key_repeat_delay_s= cfg["key_repeat_delay_ms"] * 0.001
     SC.key_repeat_rate   = cfg["key_repeat_rate_ms"]
+    SC.key_repeat_rate_s = cfg["key_repeat_rate_ms"] * 0.001
 
 # ─────────────────────────────────────────────────────────────
 #  4. PERSISTENCE  (CRC32 checksum, single file)
@@ -299,7 +303,6 @@ mlx_ok = oled_ok = False
 # Pre-allocated MLX I²C buffers — avoids bytearray allocation at 50 Hz
 _MLX_CMD_MEAS  = bytearray([0x3E])   # single measurement request (X|Y|Z)
 _MLX_CMD_READ  = bytearray([0x4E])   # read XYZ result
-_MLX_CMD_NOP   = bytearray([0x00])   # NOP
 _MLX_STATUS_BUF = bytearray(1)       # reused for status polls
 _MLX_DATA_BUF   = bytearray(7)       # reused for XYZ result reads
 
@@ -450,6 +453,8 @@ if i2c:
 # ─────────────────────────────────────────────────────────────
 
 class SpaceMouse:
+    __slots__ = ("fx","fy","fz","is_orbiting","is_panning",
+                 "_above_since","_below_since","_zoom_accum")
     def __init__(self):
         self.fx = self.fy = self.fz = 0.0
         self.is_orbiting = self.is_panning = False
@@ -577,11 +582,13 @@ sm = SpaceMouse()
 
 class NoOpOLED:
     """Drop-in replacement when no OLED is connected — all calls are free."""
+    __slots__ = ()
     def flash(self, msg, ms=1200): pass
     def mark_dirty(self): pass
     def update(self): pass
 
 class OLEDManager:
+    __slots__ = ("hw","_flash_until","_flash_msg","_dirty","_last_draw")
     MIN_INTERVAL = 0.1
 
     def __init__(self, hw):
@@ -828,7 +835,7 @@ def key_release(idx, now):
         if not passthrough_mode:
             if state[1]:
                 release_combo(hold)
-            elif (now - state[0]) < SC.tap_hold_ms * 0.001:
+            elif (now - state[0]) < SC.tap_hold_s:
                 send_combo(tap)
                 if tap: oled.flash("+".join(tap))
         sys.stdout.write(_KR_JSON[idx])
@@ -839,9 +846,9 @@ def key_release(idx, now):
     sys.stdout.write(_KR_JSON[idx])
 
 def poll_tap_hold(now):
-    thresh = SC.tap_hold_ms * 0.001   # convert ms → seconds once per call
-    delay  = SC.key_repeat_delay * 0.001
-    rate   = SC.key_repeat_rate * 0.001
+    thresh = SC.tap_hold_s     # pre-computed in _sync_cache
+    delay  = SC.key_repeat_delay_s
+    rate   = SC.key_repeat_rate_s
     layer  = _active_layer()
     if not layer: return
 
@@ -907,7 +914,7 @@ telemetry_active  = False
 passthrough_mode  = False  # when True: key events reported but HID suppressed (visualiser)
 
 def handle_command(raw):
-    global telemetry_active
+    global telemetry_active, passthrough_mode
     try:
         cmd = json.loads(raw)
     except Exception:

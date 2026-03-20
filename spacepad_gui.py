@@ -1748,8 +1748,13 @@ class MatrixTab(QWidget):
 
     def _build_editor_panel(self, key_idx, layer_idx, kc):
         """Build the side panel editor for a specific key."""
-        import copy as _copy
-        cfg = _copy.deepcopy(kc)
+        # Clean up previous panel to prevent widget accumulation
+        old = self._editor_scroll.widget()
+        if old and old is not self._editor_placeholder:
+            old.setParent(None)
+            old.deleteLater()
+
+        cfg = copy.deepcopy(kc)
 
         panel = QWidget()
         panel.setStyleSheet(f"background: {T.SURFACE};")
