@@ -749,9 +749,9 @@ if lcd_ok:
             self._dirty     = False
             self._last_draw = now
 
-    oled = LCDManager(_lcd)
+    lcd = LCDManager(_lcd)
 else:
-    oled = NoOpDisplay()
+    lcd = NoOpDisplay()
 
 # ─────────────────────────────────────────────────────────────
 #  9. ACTION HELPERS
@@ -838,7 +838,7 @@ def _broadcast_layer():
         "mo":    bool(_mo_stack),
         "sm_active": SC.sm_active,
     })
-    oled.mark_dirty()
+    lcd.mark_dirty()
 
 def cycle_layer():
     layers = cfg["layers"]
@@ -909,7 +909,7 @@ def key_press(idx, now):
     if macro:
         if not passthrough_mode:
             play_macro(macro)
-            oled.flash("+".join(tap) if tap else "MACRO")
+            lcd.flash("+".join(tap) if tap else "MACRO")
         sys.stdout.write(_KP_JSON[idx])
         return
 
@@ -922,7 +922,7 @@ def key_press(idx, now):
         if _wants_repeat(kc, tap):
             repeat_state[idx] = [now, now, tap]
         if tap and not passthrough_mode:
-            oled.flash("+".join(tap))
+            lcd.flash("+".join(tap))
     sys.stdout.write(_KP_JSON[idx])
 
 def key_release(idx, now):
@@ -960,7 +960,7 @@ def key_release(idx, now):
                 release_combo(hold)
             elif (now - state[0]) < SC.tap_hold_s:
                 send_combo(tap)
-                if tap: oled.flash("+".join(tap))
+                if tap: lcd.flash("+".join(tap))
         sys.stdout.write(_KR_JSON[idx])
         return
 
@@ -1073,7 +1073,7 @@ def handle_command(raw):
             cfg[k] = v
             _sync_cache()
             send_json({"event":"ack","key":k,"value":v})
-            oled.mark_dirty()
+            lcd.mark_dirty()
         else:
             send_json({"error":"unknown_key","key":k})
 
@@ -1083,7 +1083,7 @@ def handle_command(raw):
             cfg["layers"] = layers
             cfg["active_layer"] = min(cfg["active_layer"], len(layers)-1)
             send_json({"event":"ack_layers","count":len(layers)})
-            oled.mark_dirty()
+            lcd.mark_dirty()
         else:
             send_json({"error":"invalid_layers"})
 
@@ -1108,7 +1108,7 @@ def handle_command(raw):
         if 0 <= idx < len(layers) and name:
             layers[idx]["name"] = name
             send_json({"event":"ack_rename_layer"})
-            oled.mark_dirty()
+            lcd.mark_dirty()
 
     elif action == "set_active_layer":
         idx = cmd.get("index",0)
@@ -1140,7 +1140,7 @@ def handle_command(raw):
             if key == "sm_active" and li == _active_layer_idx():
                 SC.sm_active = bool(val)
             send_json({"event":"ack_layer_prop","layer":li,"key":key})
-            oled.mark_dirty()
+            lcd.mark_dirty()
         else:
             send_json({"error":"invalid_layer_prop"})
 
@@ -1151,7 +1151,7 @@ def handle_command(raw):
         if enc in (1,2) and mode in ENCODER_MODES and 0 <= li < len(layers):
             layers[li]["enc" + str(enc) + "_mode"] = mode
             send_json({"event":"ack_encoder_mode"})
-            oled.mark_dirty()
+            lcd.mark_dirty()
         else:
             send_json({"error":"invalid_encoder_mode"})
 
@@ -1170,7 +1170,7 @@ def handle_command(raw):
             try:
                 offsets = sm.recalibrate()
                 send_json({"event":"zeroed","offsets":offsets})
-                oled.flash("Space Mouse Zeroed")
+                lcd.flash("Space Mouse Zeroed")
             except Exception as e:
                 send_json({"error":"zero_failed","detail":str(e)})
         else:
@@ -1179,7 +1179,7 @@ def handle_command(raw):
     elif action == "save":
         ok = save_config(cfg)
         send_json({"event":"saved" if ok else "save_failed"})
-        if ok: oled.flash("Saved!")
+        if ok: lcd.flash("Saved!")
 
     elif action == "ping":
         send_json({"event":"pong"})
@@ -1207,7 +1207,7 @@ send_json({"event":"boot_complete","health":{
 }})
 
 if lcd_ok:
-    oled.flash("Ready  (" + _settings_status + ")", ms=2000)
+    lcd.flash("Ready  (" + _settings_status + ")", ms=2000)
 
 SENSOR_INTV    = 0.02    # hardware read rate — 50 Hz
 TELEMETRY_INTV = 0.05   # GUI update rate  — 20 Hz (reduces serial GC pressure)
@@ -1294,7 +1294,7 @@ while True:
                 if enc2_zoom_override:
                     enc2_zoom_override = False
                     send_json({"event":"enc2_zoom_override","active":False})
-                    oled.mark_dirty()
+                    lcd.mark_dirty()
                 elif held < ENC2_HOLD_S:
                     if not passthrough_mode:
                         execute_action(cfg["btn_extra1"])
@@ -1309,7 +1309,7 @@ while True:
         if now - btn1_down_at >= ENC2_HOLD_S:
             enc2_zoom_override = True
             send_json({"event":"enc2_zoom_override","active":True})
-            oled.flash("ENC2: ZOOM")
+            lcd.flash("ENC2: ZOOM")
 
     # ── Encoder switches ────────────────────────────────────
     ese = encoder_switches.events.get()
@@ -1389,4 +1389,4 @@ while True:
         last_telemetry = now
 
     # ── OLED ────────────────────────────────────────────────
-    oled.update()
+    lcd.update()
