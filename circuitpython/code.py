@@ -269,9 +269,15 @@ JOY_Y_PIN      = board.GP26
 JOY_SW_PIN     = board.GP22
 BTN_EXTRA1_PIN = board.GP18
 BTN_EXTRA2_PIN = board.GP19
-# MLX90393 + SSD1306 OLED — shared I²C bus 0 (GP16=SDA, GP17=SCL)
-# Different I²C addresses so no conflict: MLX=0x0C, OLED=0x3C
+# MLX90393 — I²C bus (GP16=SDA, GP17=SCL)
 I2C_SDA, I2C_SCL = board.GP16, board.GP17
+# ST7789 LCD — SPI via PIO on free pins
+LCD_SCK  = board.GP20
+LCD_MOSI = board.GP21
+LCD_CS   = board.GP23
+LCD_DC   = board.GP24
+LCD_RST  = board.GP28
+LCD_BL   = board.GP25
 
 keys = keypad.KeyMatrix(ROW_PINS, COL_PINS, columns_to_anodes=False)
 direct_keys = keypad.Keys(
@@ -288,19 +294,19 @@ joy_x = analogio.AnalogIn(JOY_X_PIN)
 joy_y = analogio.AnalogIn(JOY_Y_PIN)
 
 # ─────────────────────────────────────────────────────────────
-#  6. I2C + MLX90393 + SSD1306
-#  Single shared I²C bus on GP16 (SDA) / GP17 (SCL)
-#  MLX90393 @ 0x0C  —  SSD1306 OLED @ 0x3C  (no address conflict)
+#  6. I2C + MLX90393 + ST7789 LCD
+#  I²C bus on GP16 (SDA) / GP17 (SCL) — MLX90393 @ 0x0C
+#  SPI LCD on GP20-GP25,GP28 via PIO
 # ─────────────────────────────────────────────────────────────
 
 i2c     = None
 mlx     = None
-oled_hw = None
+lcd_ok  = False
 # Three flat variables instead of a list — avoids index lookups on every sensor tick
 _mlx_ox = 0.0
 _mlx_oy = 0.0
 _mlx_oz = 0.0
-mlx_ok = oled_ok = False
+mlx_ok = False
 
 # Pre-allocated MLX I²C buffers — avoids bytearray allocation at 50 Hz
 _MLX_CMD_MEAS  = bytearray([0x3E])   # single measurement request (X|Y|Z)
@@ -439,16 +445,31 @@ if i2c:
         send_json({"event": "mlx_error", "detail": str(e)})
         mlx = None
 
-    # SSD1306 OLED
-    try:
-        import adafruit_ssd1306
-        oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c, addr=0x3C)
-        oled_hw.fill(0)
-        oled_hw.show()
-        oled_ok = True
-        send_json({"event": "oled_ok"})
-    except Exception as e:
-        send_json({"event": "oled_error", "detail": str(e)})
+# ST7789 LCD — SPI via PIO (independent of I2C bus)
+try:
+    import displayio
+    import fourwire
+    import terminalio
+    from adafruit_display_text import label as _dlabel
+    import adafruit_st7789
+    import digitalio
+
+    displayio.release_displays()
+
+    _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
+    _lcd_bus = fourwire.FourWire(_lcd_spi, command=LCD_DC, chip_select=LCD_CS, reset=LCD_RST)
+    _lcd = adafruit_st7789.ST7789(_lcd_bus, width=320, height=240, rotation=90)
+
+    # Backlight on
+    _bl = digitalio.DigitalInOut(LCD_BL)
+    _bl.direction = digitalio.Direction.OUTPUT
+    _bl.value = True
+
+    lcd_ok = True
+    send_json({"event": "lcd_ok", "width": 320, "height": 240})
+except Exception as e:
+    send_json({"event": "lcd_error", "detail": str(e)})
+    _lcd = None
 
 # ─────────────────────────────────────────────────────────────
 #  7. SPACE MOUSE
@@ -595,59 +616,142 @@ class SpaceMouse:
 sm = SpaceMouse()
 
 # ─────────────────────────────────────────────────────────────
-#  8. OLED MANAGER
-#  NoOpOLED avoids a branch on every loop tick when no OLED present.
+#  8. DISPLAY MANAGER
+#  NoOpDisplay when no LCD present. LCDManager uses displayio
+#  with text labels — only changed labels trigger redraws.
 # ─────────────────────────────────────────────────────────────
 
-class NoOpOLED:
-    """Drop-in replacement when no OLED is connected — all calls are free."""
+class NoOpDisplay:
+    """Drop-in replacement when no display is connected — all calls are free."""
     __slots__ = ()
     def flash(self, msg, ms=1200): pass
     def mark_dirty(self): pass
     def update(self): pass
 
-class OLEDManager:
-    __slots__ = ("hw","_flash_until","_flash_msg","_dirty","_last_draw")
-    MIN_INTERVAL = 0.1
+if lcd_ok:
+    class LCDManager:
+        __slots__ = ("_display","_main_group","_flash_group","_root",
+                     "_lbl_layer","_lbl_enc","_lbl_sw","_lbl_status",
+                     "_lbl_flash","_dirty","_flash_until","_last_draw",
+                     "_showing_flash")
+        MIN_INTERVAL = 0.15   # ~7 Hz refresh — plenty for status text
 
-    def __init__(self, hw):
-        self.hw = hw
-        self._flash_until = 0.0
-        self._flash_msg   = ""
-        self._dirty       = True
-        self._last_draw   = 0.0
+        def __init__(self, display):
+            self._display = display
+            self._dirty       = True
+            self._flash_until = 0.0
+            self._last_draw   = 0.0
+            self._showing_flash = False
 
-    def flash(self, msg, ms=1200):
-        self._flash_msg   = msg[:21]
-        self._flash_until = time.monotonic() + ms / 1000
-        self._dirty = True
+            # Colour constants (565 format)
+            C_BG    = 0x08080F
+            C_BLUE  = 0x60A5FA
+            C_DIM   = 0x94A3B8
+            C_WHITE = 0xFFFFFF
+            C_GREEN = 0x22C55E
 
-    def mark_dirty(self):
-        self._dirty = True
+            _font = terminalio.FONT
 
-    def update(self):
-        if not self._dirty: return
-        now = time.monotonic()
-        if now - self._last_draw < self.MIN_INTERVAL: return
-        hw = self.hw
-        hw.fill(0)
-        if now < self._flash_until:
-            hw.text(self._flash_msg, 0, 12, 1)
-        else:
-            lay = _active_layer()
-            name = lay.get("name","?")[:21] if lay else "\u2014"
-            hw.text(name, 0, 0, 1)
-            if lay:
-                m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
-                m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
-                hw.text("1:" + m1 + " 2:" + m2, 0, 10, 1)
-            if enc2_zoom_override:
-                hw.text("ENC2:ZOOM", 0, 22, 1)
-        hw.show()
-        self._dirty     = False
-        self._last_draw = now
+            # ── Main info group ──
+            self._main_group = displayio.Group()
 
-oled = OLEDManager(oled_hw) if oled_ok else NoOpOLED()
+            # Background
+            _bg_bmp = displayio.Bitmap(320, 240, 1)
+            _bg_pal = displayio.Palette(1)
+            _bg_pal[0] = C_BG
+            self._main_group.append(displayio.TileGrid(_bg_bmp, pixel_shader=_bg_pal))
+
+            # Layer name — large (scale=3, ~17 chars)
+            self._lbl_layer = _dlabel.Label(_font, text="SpacePad", color=C_BLUE,
+                                            x=12, y=24, scale=3)
+            self._main_group.append(self._lbl_layer)
+
+            # Encoder modes
+            self._lbl_enc = _dlabel.Label(_font, text="E1: ---   E2: ---", color=C_DIM,
+                                          x=12, y=68, scale=2)
+            self._main_group.append(self._lbl_enc)
+
+            # Encoder switches / extra info
+            self._lbl_sw = _dlabel.Label(_font, text="", color=C_DIM,
+                                         x=12, y=100, scale=1)
+            self._main_group.append(self._lbl_sw)
+
+            # Status line (space mouse, zoom override)
+            self._lbl_status = _dlabel.Label(_font, text="", color=C_GREEN,
+                                              x=12, y=128, scale=2)
+            self._main_group.append(self._lbl_status)
+
+            # ── Flash overlay group ──
+            self._flash_group = displayio.Group()
+
+            _fbg_bmp = displayio.Bitmap(320, 240, 1)
+            _fbg_pal = displayio.Palette(1)
+            _fbg_pal[0] = C_BG
+            self._flash_group.append(displayio.TileGrid(_fbg_bmp, pixel_shader=_fbg_pal))
+
+            self._lbl_flash = _dlabel.Label(_font, text="", color=C_WHITE,
+                                             x=20, y=120, scale=3)
+            self._flash_group.append(self._lbl_flash)
+
+            # Root group — swap between main and flash
+            self._root = displayio.Group()
+            self._root.append(self._main_group)
+            display.root_group = self._root
+
+        def flash(self, msg, ms=1200):
+            self._lbl_flash.text = msg[:17]   # scale=3 fits ~17 chars
+            self._flash_until = time.monotonic() + ms / 1000
+            self._dirty = True
+
+        def mark_dirty(self):
+            self._dirty = True
+
+        def update(self):
+            if not self._dirty:
+                return
+            now = time.monotonic()
+            if now - self._last_draw < self.MIN_INTERVAL:
+                return
+
+            if now < self._flash_until:
+                # Show flash overlay
+                if not self._showing_flash:
+                    while len(self._root):
+                        self._root.pop()
+                    self._root.append(self._flash_group)
+                    self._showing_flash = True
+            else:
+                # Show main info
+                if self._showing_flash:
+                    while len(self._root):
+                        self._root.pop()
+                    self._root.append(self._main_group)
+                    self._showing_flash = False
+
+                # Update main labels
+                lay = _active_layer()
+                name = lay.get("name", "?")[:17] if lay else "—"
+                self._lbl_layer.text = name
+
+                if lay:
+                    m1 = ENC_SHORT.get(lay.get("enc1_mode", ""), "?")
+                    m2 = ENC_SHORT.get(lay.get("enc2_mode", ""), "?")
+                    self._lbl_enc.text = "E1:" + m1 + "  E2:" + m2
+                else:
+                    self._lbl_enc.text = ""
+
+                if enc2_zoom_override:
+                    self._lbl_status.text = "ENC2: ZOOM"
+                    self._lbl_status.color = 0xEAB308   # yellow
+                else:
+                    self._lbl_status.text = ""
+
+            self._dirty     = False
+            self._last_draw = now
+
+    oled = LCDManager(_lcd)
+else:
+    oled = NoOpDisplay()
 
 # ─────────────────────────────────────────────────────────────
 #  9. ACTION HELPERS
@@ -1095,14 +1199,14 @@ SC.sm_active = bool(_boot_layer.get("sm_active", False)) if _boot_layer else Fal
 
 send_json({"event":"boot_complete","health":{
     "mlx":      mlx_ok,
-    "oled":     oled_ok,
+    "lcd":      lcd_ok,
     "settings": _settings_status,
     "enc1_pos": encoder1.position,
     "enc2_pos": encoder2.position,
     "layers":   len(cfg["layers"]),
 }})
 
-if oled_ok:
+if lcd_ok:
     oled.flash("Ready  (" + _settings_status + ")", ms=2000)
 
 SENSOR_INTV    = 0.02    # hardware read rate — 50 Hz

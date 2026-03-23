@@ -1,10 +1,10 @@
 # SpacePad
 
-**A 20-key macropad (non-standard 5×5 matrix) with an integrated 3D space mouse, dual rotary encoders, analog joystick, and OLED display — powered by a Raspberry Pi Pico and CircuitPython.**
+**A 20-key macropad (non-standard 5×5 matrix) with an integrated 3D space mouse, dual rotary encoders, analog joystick, and 2" colour LCD — powered by a Raspberry Pi Pico and CircuitPython.**
 
-SpacePad is a fully open-source input device designed for creative professionals, CAD users, and anyone who wants deep keyboard/mouse customization. It combines a 20-key matrix, a CJMCU-90393 (MLX90393) magnetometer-based space mouse for 3D orbit/pan/zoom driven by a custom-built I²C driver, two clickable rotary encoders, an analog joystick for mouse control, and a 128×32 OLED status display — all configurable through a single desktop app that doubles as a system tray auto-layer switcher.
+SpacePad is a fully open-source input device designed for creative professionals, CAD users, and anyone who wants deep keyboard/mouse customization. It combines a 20-key matrix, a CJMCU-90393 (MLX90393) magnetometer-based space mouse for 3D orbit/pan/zoom driven by a custom-built I²C driver, two clickable rotary encoders, an analog joystick for mouse control, and a 2" 320×240 colour LCD status display — all configurable through a single desktop app that doubles as a system tray auto-layer switcher.
 
-> **This project is a fork of [jeevan8232/macrokeyboard](https://github.com/jeevan8232/macrokeyboard)** — the original hardware design, 3D printable files, and keycap STLs are from that project. SpacePad builds on top of it with a fully rewritten firmware, a desktop configurator GUI with integrated tray app, OLED support, and a custom magnetometer driver.
+> **This project is a fork of [jeevan8232/macrokeyboard](https://github.com/jeevan8232/macrokeyboard)** — the original hardware design, 3D printable files, and keycap STLs are from that project. SpacePad builds on top of it with a fully rewritten firmware, a desktop configurator GUI with integrated tray app, LCD display support, and a custom magnetometer driver.
 
 **3D print files:** https://www.thingiverse.com/thing:7293580
 
@@ -31,7 +31,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 - **CJMCU-90393 magnetometer** (MLX90393) acting as a contactless 3D space mouse — orbit, pan, and zoom in CAD software by tilting a magnet above the sensor. Driven by a custom-built non-blocking I²C driver (no external library required). **Important:** solder the CS and PU jumper pads on the back of the CJMCU board to enable I²C mode and pull-ups
 - **Dual rotary encoders** with push-button switches, configurable per-layer for horizontal scroll, vertical scroll, zoom, undo/redo, tab switching, or volume control
 - **Analog joystick** with push-button click for full mouse cursor control with adjustable speed, deadzone, and axis inversion
-- **SSD1306 128×32 OLED** displaying the active layer name, encoder modes, and flash notifications
+- **Waveshare 2" LCD** (ST7789VW, 320×240 colour) displaying the active layer name, encoder modes, and flash notifications via SPI
 - **Two extra buttons** — one for layer cycling, one configurable (default: F6)
 - **Raspberry Pi Pico** running CircuitPython — no compiling, just drag-and-drop firmware
 
@@ -83,13 +83,19 @@ A single application that serves as both the full configurator GUI and a backgro
 | Key matrix columns | GP5 – GP9 | 5 columns (active low, `columns_to_anodes=False`) |
 | Encoder 1 (CLK, DT, SW) | GP10, GP11, GP12 | |
 | Encoder 2 (CLK, DT, SW) | GP13, GP14, GP15 | |
-| I²C SDA (MLX + OLED) | GP16 | Shared bus, CJMCU-90393 @ 0x0C, OLED @ 0x3C |
-| I²C SCL (MLX + OLED) | GP17 | Shared bus, 100 kHz |
+| I²C SDA (MLX) | GP16 | CJMCU-90393 @ 0x0C |
+| I²C SCL (MLX) | GP17 | 100 kHz |
 | Extra button 1 | GP18 | Configurable action / enc2 zoom hold |
 | Extra button 2 | GP19 | Layer cycle |
+| LCD SCK | GP20 | SPI clock (PIO) |
+| LCD MOSI | GP21 | SPI data (PIO) |
 | Joystick click | GP22 | Configurable action |
+| LCD CS | GP23 | Chip select |
+| LCD DC | GP24 | Data/command |
+| LCD BL | GP25 | Backlight control |
 | Joystick Y axis | GP26 | ADC |
 | Joystick X axis | GP27 | ADC |
+| LCD RST | GP28 | Reset |
 
 A detailed wiring diagram for the key matrix is included in the [setup guide PDF](spacepad_setup_guide.pdf).
 
@@ -101,8 +107,9 @@ A detailed wiring diagram for the key matrix is included in the [setup guide PDF
 - **Raspberry Pi Pico** with [CircuitPython](https://circuitpython.org/board/raspberry_pi_pico/) installed (9.x recommended)
 - **CircuitPython libraries** on the Pico's `CIRCUITPY/lib/` folder:
   - `adafruit_hid` (keyboard, mouse, consumer control)
-  - `adafruit_ssd1306` (OLED driver)
-  - `adafruit_bus_device` (I²C helpers for OLED)
+  - `adafruit_st7789` (LCD driver)
+  - `adafruit_display_text` (text rendering for LCD)
+  - `adafruit_bus_device` (I²C helpers)
   - No magnetometer library needed — the firmware includes a custom-built I²C driver for the CJMCU-90393
 - **Python 3.10+** on your PC for the configurator app
 
@@ -208,7 +215,7 @@ The Pico and GUI communicate over USB serial at 115200 baud using newline-delimi
 
 | Event | Description |
 |---|---|
-| `boot_complete` | Startup health report (MLX, OLED, settings status, layer count) |
+| `boot_complete` | Startup health report (MLX, LCD, settings status, layer count) |
 | `config` | Full configuration payload |
 | `layer_changed` | Active layer index, name, MO status, space mouse active |
 | `key_press` / `key_release` | Key index for visualizer |
@@ -252,7 +259,7 @@ SpacePad/
 | Analog joystick module | 1 | PS2-style dual-axis with click (e.g., KY-023) |
 | CJMCU-90393 magnetometer | 1 | MLX90393-based breakout, I²C address 0x0C, custom driver (no library needed). **Solder the CS and PU jumpers on the back of the board** to enable I²C mode and pull-ups |
 | Neodymium magnet | 1 | Mounted above the CJMCU-90393 on a lever/spring |
-| SSD1306 OLED 128×32 | 1 | I²C, address 0x3C |
+| Waveshare 2" LCD (ST7789VW) | 1 | 320×240 colour, SPI interface |
 | Tactile buttons | 2 | For extra button 1 (GP18) and layer cycle (GP19) |
 
 For 3D printable parts, see the [`3d files/stl/`](3d%20files/stl/) directory or the [Thingiverse page](https://www.thingiverse.com/thing:7293580).
