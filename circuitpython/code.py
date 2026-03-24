@@ -267,17 +267,11 @@ ENC2_CLK, ENC2_DT, ENC2_SW = board.GP13, board.GP14, board.GP15
 JOY_X_PIN      = board.GP27
 JOY_Y_PIN      = board.GP26
 JOY_SW_PIN     = board.GP22
-BTN_EXTRA1_PIN = board.GP20
-BTN_EXTRA2_PIN = board.GP21
-# MLX90393 — I²C bus (GP16=SDA, GP17=SCL)
+BTN_EXTRA1_PIN = board.GP18
+BTN_EXTRA2_PIN = board.GP19
+# MLX90393 + SSD1306 OLED — shared I²C bus 0 (GP16=SDA, GP17=SCL)
+# Different I²C addresses so no conflict: MLX=0x0C, OLED=0x3C
 I2C_SDA, I2C_SCL = board.GP16, board.GP17
-# ST7789 LCD — hardware SPI0 on GP18 (SCK) / GP19 (MOSI)
-LCD_SCK  = board.GP18
-LCD_MOSI = board.GP19
-LCD_CS   = board.GP23
-LCD_DC   = board.GP24
-LCD_RST  = board.GP28
-LCD_BL   = board.GP25
 
 keys = keypad.KeyMatrix(ROW_PINS, COL_PINS, columns_to_anodes=False)
 direct_keys = keypad.Keys(
@@ -294,19 +288,19 @@ joy_x = analogio.AnalogIn(JOY_X_PIN)
 joy_y = analogio.AnalogIn(JOY_Y_PIN)
 
 # ─────────────────────────────────────────────────────────────
-#  6. I2C + MLX90393 + ST7789 LCD
-#  I²C bus on GP16 (SDA) / GP17 (SCL) — MLX90393 @ 0x0C
-#  SPI LCD on GP20-GP25,GP28 via PIO
+#  6. I2C + MLX90393 + SSD1306
+#  Single shared I²C bus on GP16 (SDA) / GP17 (SCL)
+#  MLX90393 @ 0x0C  —  SSD1306 OLED @ 0x3C  (no address conflict)
 # ─────────────────────────────────────────────────────────────
 
 i2c     = None
 mlx     = None
-lcd_ok  = False
+oled_hw = None
 # Three flat variables instead of a list — avoids index lookups on every sensor tick
 _mlx_ox = 0.0
 _mlx_oy = 0.0
 _mlx_oz = 0.0
-mlx_ok = False
+mlx_ok = oled_ok = False
 
 # Pre-allocated MLX I²C buffers — avoids bytearray allocation at 50 Hz
 _MLX_CMD_MEAS  = bytearray([0x3E])   # single measurement request (X|Y|Z)
@@ -411,7 +405,6 @@ if i2c:
             def tick(self, now):
                 """Call every main loop iteration. Returns True when new XYZ is ready."""
                 if self._state == 0:
-                    # Send measurement request and return — no blocking
                     try:
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_MEAS)
                         self._req_time = now
@@ -422,13 +415,11 @@ if i2c:
                             send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
                 else:
-                    # Need at least 1.5ms for conversion — skip early polls
                     if now - self._req_time < 0.0015:
                         return False
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         if _MLX_STATUS_BUF[0] & 0x01:
-                            # DRDY set — read the result
                             _mlx_transceive(_i2c_ref, _addr_ref, _MLX_CMD_READ, _MLX_DATA_BUF)
                             self.x = _s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2])
                             self.y = _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4])
@@ -440,7 +431,6 @@ if i2c:
                         self._err_count += 1
                         if self._err_count <= 3:
                             send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
-                    # Timeout after 100ms — reset to avoid getting stuck
                     if now - self._req_time > 0.1:
                         self._state = 0
                     return False
@@ -452,53 +442,16 @@ if i2c:
         send_json({"event": "mlx_error", "detail": str(e)})
         mlx = None
 
-# ST7789 LCD — hardware SPI0 on GP18 (SCK) / GP19 (MOSI)
-# IMPORTANT: import displayio ONLY after confirming SPI pins are valid.
-# On RP2040, importing displayio initialises PIO/DMA resources that
-# interfere with the I2C bus used by the MLX magnetometer.
-_lcd = None
-try:
-    # Test SPI pins first — cheap, no side effects
-    _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
-    send_json({"event": "lcd_spi", "mode": "busio"})
-
-    # SPI OK — now safe to import displayio
-    import displayio
-    import fourwire
-    import terminalio
-    from adafruit_display_text import label as _dlabel
-    import adafruit_st7789
-    import digitalio
-
-    _lcd_bus = fourwire.FourWire(_lcd_spi, command=LCD_DC, chip_select=LCD_CS, reset=LCD_RST)
-    _lcd = adafruit_st7789.ST7789(_lcd_bus, width=320, height=240, rotation=90)
-    _lcd.auto_refresh = False   # CRITICAL: disable background refresh —
-                                # it interrupts I2C transactions and breaks
-                                # the MLX magnetometer non-blocking reader
-
-    # Backlight on
-    _bl = digitalio.DigitalInOut(LCD_BL)
-    _bl.direction = digitalio.Direction.OUTPUT
-    _bl.value = True
-
-    lcd_ok = True
-    send_json({"event": "lcd_ok", "width": 320, "height": 240})
-except Exception as e:
-    send_json({"event": "lcd_error", "detail": str(e)})
-
-# Verify I2C bus still works after LCD init attempt
-if i2c and mlx_ok:
+    # SSD1306 OLED
     try:
-        while not i2c.try_lock():
-            pass
-        _post_scan = i2c.scan()
-        i2c.unlock()
-        if 0x0C in _post_scan:
-            send_json({"event": "i2c_post_lcd_ok"})
-        else:
-            send_json({"event": "i2c_post_lcd_fail", "found": [hex(x) for x in _post_scan]})
+        import adafruit_ssd1306
+        oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c, addr=0x3C)
+        oled_hw.fill(0)
+        oled_hw.show()
+        oled_ok = True
+        send_json({"event": "oled_ok"})
     except Exception as e:
-        send_json({"event": "i2c_post_lcd_err", "detail": str(e)})
+        send_json({"event": "oled_error", "detail": str(e)})
 
 # ─────────────────────────────────────────────────────────────
 #  7. SPACE MOUSE
@@ -645,143 +598,59 @@ class SpaceMouse:
 sm = SpaceMouse()
 
 # ─────────────────────────────────────────────────────────────
-#  8. DISPLAY MANAGER
-#  NoOpDisplay when no LCD present. LCDManager uses displayio
-#  with text labels — only changed labels trigger redraws.
+#  8. OLED MANAGER
+#  NoOpOLED avoids a branch on every loop tick when no OLED present.
 # ─────────────────────────────────────────────────────────────
 
-class NoOpDisplay:
-    """Drop-in replacement when no display is connected — all calls are free."""
+class NoOpOLED:
+    """Drop-in replacement when no OLED is connected — all calls are free."""
     __slots__ = ()
     def flash(self, msg, ms=1200): pass
     def mark_dirty(self): pass
     def update(self): pass
 
-if lcd_ok:
-    class LCDManager:
-        __slots__ = ("_display","_main_group","_flash_group","_root",
-                     "_lbl_layer","_lbl_enc","_lbl_sw","_lbl_status",
-                     "_lbl_flash","_dirty","_flash_until","_last_draw",
-                     "_showing_flash")
-        MIN_INTERVAL = 0.15   # ~7 Hz refresh — plenty for status text
+class OLEDManager:
+    __slots__ = ("hw","_flash_until","_flash_msg","_dirty","_last_draw")
+    MIN_INTERVAL = 0.1
 
-        def __init__(self, display):
-            self._display = display
-            self._dirty       = True
-            self._flash_until = 0.0
-            self._last_draw   = 0.0
-            self._showing_flash = False
+    def __init__(self, hw):
+        self.hw = hw
+        self._flash_until = 0.0
+        self._flash_msg   = ""
+        self._dirty       = True
+        self._last_draw   = 0.0
 
-            # Colour constants (565 format)
-            C_BG    = 0x08080F
-            C_BLUE  = 0x60A5FA
-            C_DIM   = 0x94A3B8
-            C_WHITE = 0xFFFFFF
-            C_GREEN = 0x22C55E
+    def flash(self, msg, ms=1200):
+        self._flash_msg   = msg[:21]
+        self._flash_until = time.monotonic() + ms / 1000
+        self._dirty = True
 
-            _font = terminalio.FONT
+    def mark_dirty(self):
+        self._dirty = True
 
-            # ── Main info group ──
-            self._main_group = displayio.Group()
+    def update(self):
+        if not self._dirty: return
+        now = time.monotonic()
+        if now - self._last_draw < self.MIN_INTERVAL: return
+        hw = self.hw
+        hw.fill(0)
+        if now < self._flash_until:
+            hw.text(self._flash_msg, 0, 12, 1)
+        else:
+            lay = _active_layer()
+            name = lay.get("name","?")[:21] if lay else "\u2014"
+            hw.text(name, 0, 0, 1)
+            if lay:
+                m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
+                m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
+                hw.text("1:" + m1 + " 2:" + m2, 0, 10, 1)
+            if enc2_zoom_override:
+                hw.text("ENC2:ZOOM", 0, 22, 1)
+        hw.show()
+        self._dirty     = False
+        self._last_draw = now
 
-            # Background
-            _bg_bmp = displayio.Bitmap(320, 240, 1)
-            _bg_pal = displayio.Palette(1)
-            _bg_pal[0] = C_BG
-            self._main_group.append(displayio.TileGrid(_bg_bmp, pixel_shader=_bg_pal))
-
-            # Layer name — large (scale=3, ~17 chars)
-            self._lbl_layer = _dlabel.Label(_font, text="SpacePad", color=C_BLUE,
-                                            x=12, y=24, scale=3)
-            self._main_group.append(self._lbl_layer)
-
-            # Encoder modes
-            self._lbl_enc = _dlabel.Label(_font, text="E1: ---   E2: ---", color=C_DIM,
-                                          x=12, y=68, scale=2)
-            self._main_group.append(self._lbl_enc)
-
-            # Encoder switches / extra info
-            self._lbl_sw = _dlabel.Label(_font, text="", color=C_DIM,
-                                         x=12, y=100, scale=1)
-            self._main_group.append(self._lbl_sw)
-
-            # Status line (space mouse, zoom override)
-            self._lbl_status = _dlabel.Label(_font, text="", color=C_GREEN,
-                                              x=12, y=128, scale=2)
-            self._main_group.append(self._lbl_status)
-
-            # ── Flash overlay group ──
-            self._flash_group = displayio.Group()
-
-            _fbg_bmp = displayio.Bitmap(320, 240, 1)
-            _fbg_pal = displayio.Palette(1)
-            _fbg_pal[0] = C_BG
-            self._flash_group.append(displayio.TileGrid(_fbg_bmp, pixel_shader=_fbg_pal))
-
-            self._lbl_flash = _dlabel.Label(_font, text="", color=C_WHITE,
-                                             x=20, y=120, scale=3)
-            self._flash_group.append(self._lbl_flash)
-
-            # Root group — swap between main and flash
-            self._root = displayio.Group()
-            self._root.append(self._main_group)
-            display.root_group = self._root
-
-        def flash(self, msg, ms=1200):
-            self._lbl_flash.text = msg[:17]   # scale=3 fits ~17 chars
-            self._flash_until = time.monotonic() + ms / 1000
-            self._dirty = True
-
-        def mark_dirty(self):
-            self._dirty = True
-
-        def update(self):
-            if not self._dirty:
-                return
-            now = time.monotonic()
-            if now - self._last_draw < self.MIN_INTERVAL:
-                return
-
-            if now < self._flash_until:
-                # Show flash overlay
-                if not self._showing_flash:
-                    while len(self._root):
-                        self._root.pop()
-                    self._root.append(self._flash_group)
-                    self._showing_flash = True
-            else:
-                # Show main info
-                if self._showing_flash:
-                    while len(self._root):
-                        self._root.pop()
-                    self._root.append(self._main_group)
-                    self._showing_flash = False
-
-                # Update main labels
-                lay = _active_layer()
-                name = lay.get("name", "?")[:17] if lay else "—"
-                self._lbl_layer.text = name
-
-                if lay:
-                    m1 = ENC_SHORT.get(lay.get("enc1_mode", ""), "?")
-                    m2 = ENC_SHORT.get(lay.get("enc2_mode", ""), "?")
-                    self._lbl_enc.text = "E1:" + m1 + "  E2:" + m2
-                else:
-                    self._lbl_enc.text = ""
-
-                if enc2_zoom_override:
-                    self._lbl_status.text = "ENC2: ZOOM"
-                    self._lbl_status.color = 0xEAB308   # yellow
-                else:
-                    self._lbl_status.text = ""
-
-            self._display.refresh()   # manual refresh since auto_refresh is off
-            self._dirty     = False
-            self._last_draw = now
-
-    lcd = LCDManager(_lcd)
-else:
-    lcd = NoOpDisplay()
+oled = OLEDManager(oled_hw) if oled_ok else NoOpOLED()
 
 # ─────────────────────────────────────────────────────────────
 #  9. ACTION HELPERS
@@ -868,7 +737,7 @@ def _broadcast_layer():
         "mo":    bool(_mo_stack),
         "sm_active": SC.sm_active,
     })
-    lcd.mark_dirty()
+    oled.mark_dirty()
 
 def cycle_layer():
     layers = cfg["layers"]
@@ -939,7 +808,7 @@ def key_press(idx, now):
     if macro:
         if not passthrough_mode:
             play_macro(macro)
-            lcd.flash("+".join(tap) if tap else "MACRO")
+            oled.flash("+".join(tap) if tap else "MACRO")
         sys.stdout.write(_KP_JSON[idx])
         return
 
@@ -952,7 +821,7 @@ def key_press(idx, now):
         if _wants_repeat(kc, tap):
             repeat_state[idx] = [now, now, tap]
         if tap and not passthrough_mode:
-            lcd.flash("+".join(tap))
+            oled.flash("+".join(tap))
     sys.stdout.write(_KP_JSON[idx])
 
 def key_release(idx, now):
@@ -990,7 +859,7 @@ def key_release(idx, now):
                 release_combo(hold)
             elif (now - state[0]) < SC.tap_hold_s:
                 send_combo(tap)
-                if tap: lcd.flash("+".join(tap))
+                if tap: oled.flash("+".join(tap))
         sys.stdout.write(_KR_JSON[idx])
         return
 
@@ -1103,7 +972,7 @@ def handle_command(raw):
             cfg[k] = v
             _sync_cache()
             send_json({"event":"ack","key":k,"value":v})
-            lcd.mark_dirty()
+            oled.mark_dirty()
         else:
             send_json({"error":"unknown_key","key":k})
 
@@ -1113,7 +982,7 @@ def handle_command(raw):
             cfg["layers"] = layers
             cfg["active_layer"] = min(cfg["active_layer"], len(layers)-1)
             send_json({"event":"ack_layers","count":len(layers)})
-            lcd.mark_dirty()
+            oled.mark_dirty()
         else:
             send_json({"error":"invalid_layers"})
 
@@ -1138,7 +1007,7 @@ def handle_command(raw):
         if 0 <= idx < len(layers) and name:
             layers[idx]["name"] = name
             send_json({"event":"ack_rename_layer"})
-            lcd.mark_dirty()
+            oled.mark_dirty()
 
     elif action == "set_active_layer":
         idx = cmd.get("index",0)
@@ -1170,7 +1039,7 @@ def handle_command(raw):
             if key == "sm_active" and li == _active_layer_idx():
                 SC.sm_active = bool(val)
             send_json({"event":"ack_layer_prop","layer":li,"key":key})
-            lcd.mark_dirty()
+            oled.mark_dirty()
         else:
             send_json({"error":"invalid_layer_prop"})
 
@@ -1181,7 +1050,7 @@ def handle_command(raw):
         if enc in (1,2) and mode in ENCODER_MODES and 0 <= li < len(layers):
             layers[li]["enc" + str(enc) + "_mode"] = mode
             send_json({"event":"ack_encoder_mode"})
-            lcd.mark_dirty()
+            oled.mark_dirty()
         else:
             send_json({"error":"invalid_encoder_mode"})
 
@@ -1200,7 +1069,7 @@ def handle_command(raw):
             try:
                 offsets = sm.recalibrate()
                 send_json({"event":"zeroed","offsets":offsets})
-                lcd.flash("Space Mouse Zeroed")
+                oled.flash("Space Mouse Zeroed")
             except Exception as e:
                 send_json({"error":"zero_failed","detail":str(e)})
         else:
@@ -1209,7 +1078,7 @@ def handle_command(raw):
     elif action == "save":
         ok = save_config(cfg)
         send_json({"event":"saved" if ok else "save_failed"})
-        if ok: lcd.flash("Saved!")
+        if ok: oled.flash("Saved!")
 
     elif action == "ping":
         diag = {"event":"pong","sm_active":SC.sm_active,"mlx":mlx is not None}
@@ -1233,15 +1102,15 @@ SC.sm_active = bool(_boot_layer.get("sm_active", False)) if _boot_layer else Fal
 
 send_json({"event":"boot_complete","health":{
     "mlx":      mlx_ok,
-    "lcd":      lcd_ok,
+    "oled":     oled_ok,
     "settings": _settings_status,
     "enc1_pos": encoder1.position,
     "enc2_pos": encoder2.position,
     "layers":   len(cfg["layers"]),
 }})
 
-if lcd_ok:
-    lcd.flash("Ready  (" + _settings_status + ")", ms=2000)
+if oled_ok:
+    oled.flash("Ready  (" + _settings_status + ")", ms=2000)
 
 SENSOR_INTV    = 0.02    # hardware read rate — 50 Hz
 TELEMETRY_INTV = 0.05   # GUI update rate  — 20 Hz (reduces serial GC pressure)
@@ -1328,7 +1197,7 @@ while True:
                 if enc2_zoom_override:
                     enc2_zoom_override = False
                     send_json({"event":"enc2_zoom_override","active":False})
-                    lcd.mark_dirty()
+                    oled.mark_dirty()
                 elif held < ENC2_HOLD_S:
                     if not passthrough_mode:
                         execute_action(cfg["btn_extra1"])
@@ -1343,7 +1212,7 @@ while True:
         if now - btn1_down_at >= ENC2_HOLD_S:
             enc2_zoom_override = True
             send_json({"event":"enc2_zoom_override","active":True})
-            lcd.flash("ENC2: ZOOM")
+            oled.flash("ENC2: ZOOM")
 
     # ── Encoder switches ────────────────────────────────────
     ese = encoder_switches.events.get()
@@ -1424,5 +1293,5 @@ while True:
             )
         last_telemetry = now
 
-    # ── LCD ────────────────────────────────────────────────
-    lcd.update()
+    # ── OLED ────────────────────────────────────────────────
+    oled.update()

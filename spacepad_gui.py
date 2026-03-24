@@ -3054,7 +3054,7 @@ class VisualiserTab(QWidget):
     def show_health(self, health):
         parts = [
             f"MLX: {'✓' if health.get('mlx') else '✗'}",
-            f"LCD: {'✓' if health.get('lcd') else '✗'}",
+            f"OLED: {'✓' if health.get('oled') else '✗'}",
             f"Settings: {health.get('settings', '?')}",
             f"Enc1@boot: {health.get('enc1_pos', 0)}",
             f"Enc2@boot: {health.get('enc2_pos', 0)}",
