@@ -85,10 +85,10 @@ A single application that serves as both the full configurator GUI and a backgro
 | Encoder 2 (CLK, DT, SW) | GP13, GP14, GP15 | |
 | I²C SDA (MLX) | GP16 | CJMCU-90393 @ 0x0C |
 | I²C SCL (MLX) | GP17 | 100 kHz |
-| Extra button 1 | GP18 | Configurable action / enc2 zoom hold |
-| Extra button 2 | GP19 | Layer cycle |
-| LCD SCK | GP20 | SPI clock (PIO) |
-| LCD MOSI | GP21 | SPI data (PIO) |
+| LCD SCK | GP18 | SPI0 clock (hardware SPI) |
+| LCD MOSI | GP19 | SPI0 data (hardware SPI) |
+| Extra button 1 | GP20 | Configurable action / enc2 zoom hold |
+| Extra button 2 | GP21 | Layer cycle |
 | Joystick click | GP22 | Configurable action |
 | LCD CS | GP23 | Chip select |
 | LCD DC | GP24 | Data/command |
@@ -168,7 +168,7 @@ This produces `SpacePad Configurator.exe` in the `dist/` folder — a single exe
 
 ### Layers
 - Add layers in the **Layers** tab. Each layer has its own key bindings, encoder modes, encoder switch actions, and a toggle for enabling the space mouse.
-- Switch layers on the pad by pressing the layer cycle button (GP19), or use a key configured as momentary (MO) to temporarily activate a layer while held.
+- Switch layers on the pad by pressing the layer cycle button (GP21), or use a key configured as momentary (MO) to temporarily activate a layer while held.
 
 ### Space Mouse
 - The CJMCU-90393 (MLX90393) sensor detects magnetic field changes when you tilt or move a magnet above it.
@@ -260,7 +260,7 @@ SpacePad/
 | CJMCU-90393 magnetometer | 1 | MLX90393-based breakout, I²C address 0x0C, custom driver (no library needed). **Solder the CS and PU jumpers on the back of the board** to enable I²C mode and pull-ups |
 | Neodymium magnet | 1 | Mounted above the CJMCU-90393 on a lever/spring |
 | Waveshare 2" LCD (ST7789VW) | 1 | 320×240 colour, SPI interface |
-| Tactile buttons | 2 | For extra button 1 (GP18) and layer cycle (GP19) |
+| Tactile buttons | 2 | For extra button 1 (GP20) and layer cycle (GP21) |
 
 For 3D printable parts, see the [`3d files/stl/`](3d%20files/stl/) directory or the [Thingiverse page](https://www.thingiverse.com/thing:7293580).
 

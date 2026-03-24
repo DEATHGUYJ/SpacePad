@@ -267,13 +267,13 @@ ENC2_CLK, ENC2_DT, ENC2_SW = board.GP13, board.GP14, board.GP15
 JOY_X_PIN      = board.GP27
 JOY_Y_PIN      = board.GP26
 JOY_SW_PIN     = board.GP22
-BTN_EXTRA1_PIN = board.GP18
-BTN_EXTRA2_PIN = board.GP19
+BTN_EXTRA1_PIN = board.GP20
+BTN_EXTRA2_PIN = board.GP21
 # MLX90393 — I²C bus (GP16=SDA, GP17=SCL)
 I2C_SDA, I2C_SCL = board.GP16, board.GP17
-# ST7789 LCD — SPI via PIO on free pins
-LCD_SCK  = board.GP20
-LCD_MOSI = board.GP21
+# ST7789 LCD — hardware SPI0 on GP18 (SCK) / GP19 (MOSI)
+LCD_SCK  = board.GP18
+LCD_MOSI = board.GP19
 LCD_CS   = board.GP23
 LCD_DC   = board.GP24
 LCD_RST  = board.GP28
