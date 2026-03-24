@@ -20,8 +20,10 @@ from adafruit_hid.consumer_control_code import ConsumerControlCode
 from adafruit_hid.mouse import Mouse
 
 # Defined first so it's available throughout boot, including I²C init diagnostics
+_stdout_write = sys.stdout.write   # local binding — avoids 3-deep global lookup
+
 def send_json(obj):
-    sys.stdout.write(json.dumps(obj) + "\n")
+    _stdout_write(json.dumps(obj) + "\n")
 
 # ─────────────────────────────────────────────────────────────
 #  1. KEYCODES + CONSTANTS
@@ -754,11 +756,13 @@ def _active_layer():
     return layers[_active_layer_idx()]
 
 def _broadcast_layer():
-    lay = _active_layer()
+    idx = _active_layer_idx()
+    layers = cfg["layers"]
+    lay = layers[idx] if layers else None
     SC.sm_active = bool(lay.get("sm_active", False)) if lay else False
     send_json({
         "event": "layer_changed",
-        "index": _active_layer_idx(),
+        "index": idx,
         "name":  lay["name"] if lay else "",
         "mo":    bool(_mo_stack),
         "sm_active": SC.sm_active,
@@ -817,25 +821,25 @@ def key_press(idx, now):
         if 0 <= mo_idx < len(layers):
             _mo_stack.append(mo_idx)
             _broadcast_layer()
-        sys.stdout.write(_KP_JSON[idx])
+        _stdout_write(_KP_JSON[idx])
         return
 
     if kt == KT_MOUSE_HOLD:
         if not passthrough_mode:
             mouse.press(MOUSE_BUTTONS.get(kc["mouse_button"] or "LEFT", Mouse.LEFT_BUTTON))
-        sys.stdout.write(_KP_JSON[idx])
+        _stdout_write(_KP_JSON[idx])
         return
 
     if kt == KT_ENC_MOD:
         _enc_mod_keys[idx] = kc["enc_mod_factor"] or 0.1
-        sys.stdout.write(_KP_JSON[idx])
+        _stdout_write(_KP_JSON[idx])
         return
 
     if macro:
         if not passthrough_mode:
             play_macro(macro)
             oled.flash("+".join(tap) if tap else "MACRO")
-        sys.stdout.write(_KP_JSON[idx])
+        _stdout_write(_KP_JSON[idx])
         return
 
     # Normal / tap-hold
@@ -848,7 +852,7 @@ def key_press(idx, now):
             repeat_state[idx] = [now, now, tap]
         if tap and not passthrough_mode:
             oled.flash("+".join(tap))
-    sys.stdout.write(_KP_JSON[idx])
+    _stdout_write(_KP_JSON[idx])
 
 def key_release(idx, now):
     layer = press_layer.pop(idx, None) or _active_layer()
@@ -859,18 +863,18 @@ def key_release(idx, now):
     if kt == KT_MO:
         if _mo_stack: _mo_stack.pop()
         _broadcast_layer()
-        sys.stdout.write(_KR_JSON[idx])
+        _stdout_write(_KR_JSON[idx])
         return
 
     if kt == KT_MOUSE_HOLD:
         if not passthrough_mode:
             mouse.release(MOUSE_BUTTONS.get(kc["mouse_button"] or "LEFT", Mouse.LEFT_BUTTON))
-        sys.stdout.write(_KR_JSON[idx])
+        _stdout_write(_KR_JSON[idx])
         return
 
     if kt == KT_ENC_MOD:
         _enc_mod_keys.pop(idx, None)
-        sys.stdout.write(_KR_JSON[idx])
+        _stdout_write(_KR_JSON[idx])
         return
 
     repeat_state.pop(idx, None)
@@ -886,15 +890,17 @@ def key_release(idx, now):
             elif (now - state[0]) < SC.tap_hold_s:
                 send_combo(tap)
                 if tap: oled.flash("+".join(tap))
-        sys.stdout.write(_KR_JSON[idx])
+        _stdout_write(_KR_JSON[idx])
         return
 
     if tap and not th and not passthrough_mode:
         release_combo(tap)
-    sys.stdout.write(_KR_JSON[idx])
+    _stdout_write(_KR_JSON[idx])
 
 def poll_tap_hold(now):
-    thresh = SC.tap_hold_s     # pre-computed in _sync_cache
+    if not tap_hold_state and not repeat_state:
+        return   # fast path — nothing held, nothing repeating
+    thresh = SC.tap_hold_s
     delay  = SC.key_repeat_delay_s
     rate   = SC.key_repeat_rate_s
     layer  = _active_layer()
@@ -1199,14 +1205,26 @@ def read_joy_y():
 
 # ─────────────────────────────────────────────────────────────
 #  16. MAIN LOOP
+#  Local bindings for frequently-accessed globals — in CircuitPython
+#  LOAD_FAST is ~40% faster than LOAD_GLOBAL on every tick.
 # ─────────────────────────────────────────────────────────────
 
+# Bind to locals once outside the loop
+_monotonic      = time.monotonic
+_serial_avail   = supervisor.runtime
+_stdin_read     = sys.stdin.read
+_keys_get       = keys.events.get
+_direct_get     = direct_keys.events.get
+_encsw_get      = encoder_switches.events.get
+_enc1           = encoder1
+_enc2           = encoder2
+
 while True:
-    now = time.monotonic()
+    now = _monotonic()
 
     # ── Serial ──────────────────────────────────────────────
-    if supervisor.runtime.serial_bytes_available:
-        serial_buf += sys.stdin.read(supervisor.runtime.serial_bytes_available)
+    if _serial_avail.serial_bytes_available:
+        serial_buf += _stdin_read(_serial_avail.serial_bytes_available)
         while "\n" in serial_buf:
             line, serial_buf = serial_buf.split("\n", 1)
             line = line.strip()
@@ -1216,13 +1234,13 @@ while True:
     poll_tap_hold(now)
 
     # ── Matrix ──────────────────────────────────────────────
-    ev = keys.events.get()
+    ev = _keys_get()
     if ev:
         if ev.pressed: key_press(ev.key_number, now)
         else:          key_release(ev.key_number, now)
 
     # ── Direct buttons ──────────────────────────────────────
-    de = direct_keys.events.get()
+    de = _direct_get()
     if de:
         dkn = de.key_number
         if dkn == 0:
@@ -1253,19 +1271,19 @@ while True:
             oled.flash("ENC2: ZOOM")
 
     # ── Encoder switches ────────────────────────────────────
-    ese = encoder_switches.events.get()
+    ese = _encsw_get()
     if ese and ese.pressed:
         lay = _active_layer()
         if lay and not passthrough_mode:
             execute_action(lay[_ENC_SW_KEYS[ese.key_number]])
 
     # ── Encoders ────────────────────────────────────────────
-    p1 = encoder1.position
+    p1 = _enc1.position
     if p1 != last_pos1:
         handle_encoder(1, p1 - last_pos1)
         last_pos1 = p1
 
-    p2 = encoder2.position
+    p2 = _enc2.position
     if p2 != last_pos2:
         d2 = p2 - last_pos2
         if enc2_zoom_override:
@@ -1315,14 +1333,14 @@ while True:
     # ── Telemetry (20 Hz — serial sends to GUI only) ────────────
     if telemetry_active and now - last_telemetry > TELEMETRY_INTV:
         if jx != prev_jx or jy != prev_jy:
-            sys.stdout.write(
+            _stdout_write(
                 '{"event":"joy_data","x":' + str(round(jx, 1)) +
                 ',"y":' + str(round(jy, 1)) + '}\n'
             )
             prev_jx = jx
             prev_jy = jy
         if mlx and SC.sm_active:   # only send sm_data when space mouse is active
-            sys.stdout.write(
+            _stdout_write(
                 '{"event":"sm_data","x":' + str(round(sm.fx, 1)) +
                 ',"y":' + str(round(sm.fy, 1)) +
                 ',"z":' + str(round(sm.fz, 1)) +
