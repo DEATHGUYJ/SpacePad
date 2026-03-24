@@ -12,6 +12,18 @@ SpacePad is a fully open-source input device designed for creative professionals
 
 ---
 
+## Quick Start
+
+1. **Flash CircuitPython 9+** onto the Pico (hold BOOTSEL, drag the `.uf2` file)
+2. **Copy `boot.py` and `code.py`** to the CIRCUITPY drive, plus the `lib/` folder
+3. **Install the GUI:** `pip install PySide6 pyserial psutil`
+4. **Run:** `python spacepad_gui.py` — select the COM port, click Connect
+5. **Configure:** click keys to remap, add layers from built-in templates (Fusion 360, Onshape, Blender, etc.), set up app-to-layer auto-switching in the Profiles tab
+
+Full build and wiring guide: [`spacepad_setup_guide.pdf`](spacepad_setup_guide.pdf)
+
+---
+
 ## Screenshots
 
 **Matrix tab** — click any key to edit in the side panel. Ghost positions are dimmed. Full editor dialog available via "EDIT FULL..."
