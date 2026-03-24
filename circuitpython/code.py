@@ -452,7 +452,7 @@ if i2c:
         send_json({"event": "mlx_error", "detail": str(e)})
         mlx = None
 
-# ST7789 LCD — SPI via PIO (independent of I2C bus)
+# ST7789 LCD — SPI via PIO or bitbang on free GPIO pins
 try:
     import displayio
     import fourwire
@@ -463,7 +463,15 @@ try:
 
     displayio.release_displays()
 
-    _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
+    # Try hardware/PIO SPI first, fall back to bitbangio for arbitrary pins
+    try:
+        _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
+        send_json({"event": "lcd_spi", "mode": "busio"})
+    except (ValueError, RuntimeError):
+        import bitbangio
+        _lcd_spi = bitbangio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
+        send_json({"event": "lcd_spi", "mode": "bitbangio"})
+
     _lcd_bus = fourwire.FourWire(_lcd_spi, command=LCD_DC, chip_select=LCD_CS, reset=LCD_RST)
     _lcd = adafruit_st7789.ST7789(_lcd_bus, width=320, height=240, rotation=90)
 
