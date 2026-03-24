@@ -164,9 +164,8 @@ class _C:
         "sm_orbit_enter","sm_orbit_exit","sm_active",
         "joy_deadzone","joy_speed","joy_invert_x","joy_invert_y",
         "enc1_speed","enc1_invert","enc2_speed","enc2_invert",
-        "tap_hold_ms","tap_hold_s","key_repeat_enabled",
-        "key_repeat_delay","key_repeat_delay_s",
-        "key_repeat_rate","key_repeat_rate_s",
+        "tap_hold_s","key_repeat_enabled",
+        "key_repeat_delay_s","key_repeat_rate_s",
     )
 
 SC = _C()   # single cache instance
@@ -192,12 +191,9 @@ def _sync_cache():
     SC.enc1_invert       = cfg["enc1_invert"]
     SC.enc2_speed        = cfg["enc2_speed"]
     SC.enc2_invert       = cfg["enc2_invert"]
-    SC.tap_hold_ms       = cfg["tap_hold_ms"]
     SC.tap_hold_s        = cfg["tap_hold_ms"] * 0.001
     SC.key_repeat_enabled= cfg["key_repeat_enabled"]
-    SC.key_repeat_delay  = cfg["key_repeat_delay_ms"]
     SC.key_repeat_delay_s= cfg["key_repeat_delay_ms"] * 0.001
-    SC.key_repeat_rate   = cfg["key_repeat_rate_ms"]
     SC.key_repeat_rate_s = cfg["key_repeat_rate_ms"] * 0.001
 
 # ─────────────────────────────────────────────────────────────
