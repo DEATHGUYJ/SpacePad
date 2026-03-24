@@ -452,20 +452,23 @@ if i2c:
         send_json({"event": "mlx_error", "detail": str(e)})
         mlx = None
 
-# ST7789 LCD — SPI on free GPIO pins
-# Guarded: if displayio import or SPI init breaks I2C, we skip the LCD
-# and re-init I2C so the MLX magnetometer keeps working.
+# ST7789 LCD — hardware SPI0 on GP18 (SCK) / GP19 (MOSI)
+# IMPORTANT: import displayio ONLY after confirming SPI pins are valid.
+# On RP2040, importing displayio initialises PIO/DMA resources that
+# interfere with the I2C bus used by the MLX magnetometer.
 _lcd = None
 try:
+    # Test SPI pins first — cheap, no side effects
+    _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
+    send_json({"event": "lcd_spi", "mode": "busio"})
+
+    # SPI OK — now safe to import displayio
     import displayio
     import fourwire
     import terminalio
     from adafruit_display_text import label as _dlabel
     import adafruit_st7789
     import digitalio
-
-    _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
-    send_json({"event": "lcd_spi", "mode": "busio"})
 
     _lcd_bus = fourwire.FourWire(_lcd_spi, command=LCD_DC, chip_select=LCD_CS, reset=LCD_RST)
     _lcd = adafruit_st7789.ST7789(_lcd_bus, width=320, height=240, rotation=90)
@@ -480,32 +483,19 @@ try:
 except Exception as e:
     send_json({"event": "lcd_error", "detail": str(e)})
 
-# Verify I2C bus survived LCD init — displayio can steal PIO resources
+# Verify I2C bus still works after LCD init attempt
 if i2c and mlx_ok:
     try:
         while not i2c.try_lock():
             pass
         _post_scan = i2c.scan()
         i2c.unlock()
-        if 0x0C not in _post_scan:
-            send_json({"event": "i2c_post_lcd_fail", "found": [hex(x) for x in _post_scan]})
-            # Re-init I2C bus
-            i2c.deinit()
-            i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
-            send_json({"event": "i2c_reinit"})
-            # Update MLX reader references
-            _i2c_ref = i2c
-        else:
+        if 0x0C in _post_scan:
             send_json({"event": "i2c_post_lcd_ok"})
+        else:
+            send_json({"event": "i2c_post_lcd_fail", "found": [hex(x) for x in _post_scan]})
     except Exception as e:
         send_json({"event": "i2c_post_lcd_err", "detail": str(e)})
-        try:
-            i2c.deinit()
-        except Exception:
-            pass
-        i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
-        _i2c_ref = i2c
-        send_json({"event": "i2c_reinit"})
 
 # ─────────────────────────────────────────────────────────────
 #  7. SPACE MOUSE
