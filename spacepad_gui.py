@@ -1632,32 +1632,108 @@ def _mods_to_label(mods):
             return label
     return SM_MOD_LABELS[0]
 
+def _make_template_keys(taps):
+    """Build a 25-element key config list from a simple list of tap combos.
+    Ghost positions (3,4,8,9,20) are left blank automatically."""
+    blank = lambda: {
+        "tap":[],"hold":[],"tap_hold_enabled":False,
+        "macro":None,"key_repeat":None,"key_type":"normal",
+        "mo_layer":None,"mouse_button":None,"enc_mod_factor":None,
+    }
+    keys = [blank() for _ in range(25)]
+    for i, tap in enumerate(taps):
+        if i < 25:
+            keys[i]["tap"] = tap
+    return keys
+
+# Key layouts per app — 25 entries matching the 5x5 matrix
+# Ghost positions (3,4,8,9,20) are blank
+# Layout:  [0]  [1]  [2]   ·    ·
+#          [5]  [6]  [7]   ·    ·
+#          [10] [11] [12] [13] [14]
+#          [15] [16] [17] [18] [19]
+#           ·   [21] [22] [23] [24]
+
+_KEYS_FUSION = [
+    ["E"],              ["S"],             ["L"],             [], [],
+    ["F"],              ["M"],             ["R"],             [], [],
+    ["ESCAPE"],         ["D"],             ["O"],         ["Q"],    ["DELETE"],
+    ["CTRL","Z"],       ["CTRL","Y"],      ["T"],         ["C"],    ["ENTER"],
+    [],                 ["H"],             ["J"],         ["I"],    ["CTRL","S"],
+]
+
+_KEYS_ONSHAPE = [
+    ["SHIFT","E"],      ["S"],             ["L"],             [], [],
+    ["SHIFT","F"],      ["SHIFT","M"],     ["R"],             [], [],
+    ["ESCAPE"],         ["D"],             ["SHIFT","O"], ["SHIFT","S"], ["DELETE"],
+    ["CTRL","Z"],       ["CTRL","Y"],      ["T"],         ["C"],    ["ENTER"],
+    [],                 ["SHIFT","H"],     ["SHIFT","L"], ["SHIFT","I"], ["CTRL","S"],
+]
+
+_KEYS_SOLIDWORKS = [
+    ["E"],              ["S"],             ["L"],             [], [],
+    ["F"],              ["M"],             ["R"],             [], [],
+    ["ESCAPE"],         ["D"],             ["O"],         ["CTRL","SHIFT","M"], ["DELETE"],
+    ["CTRL","Z"],       ["CTRL","Y"],      ["T"],         ["CTRL","SHIFT","P"], ["ENTER"],
+    [],                 ["CTRL","SHIFT","C"],["CTRL","SHIFT","H"],["CTRL","SHIFT","L"],["CTRL","S"],
+]
+
+_KEYS_BLENDER = [
+    ["E"],              ["S"],             ["G"],             [], [],
+    ["CTRL","1"],       ["R"],             ["CTRL","R"],      [], [],
+    ["ESCAPE"],         ["K"],             ["M"],         ["CTRL","B"], ["X"],
+    ["CTRL","Z"],       ["CTRL","SHIFT","Z"],["2"],       ["3"],    ["ENTER"],
+    [],                 ["I"],             ["F"],         ["CTRL","E"], ["CTRL","S"],
+]
+
+_KEYS_MAYA = [
+    ["CTRL","E"],       ["CTRL","SHIFT","S"],["SHIFT","LEFT"], [], [],
+    ["CTRL","F"],       ["W"],             ["SHIFT","RIGHT"], [], [],
+    ["ESCAPE"],         ["B"],             ["O"],         ["CTRL","D"], ["DELETE"],
+    ["CTRL","Z"],       ["CTRL","Y"],      ["F8"],        ["F9"],   ["ENTER"],
+    [],                 ["CTRL","SHIFT","C"],["CTRL","SHIFT","H"],["I"],["CTRL","S"],
+]
+
+_KEYS_FREECAD = [
+    ["E"],              ["S"],             ["L"],             [], [],
+    ["F"],              ["M"],             ["R"],             [], [],
+    ["ESCAPE"],         ["D"],             ["O"],         ["CTRL","SHIFT","M"], ["DELETE"],
+    ["CTRL","Z"],       ["CTRL","Y"],      ["T"],         ["C"],    ["ENTER"],
+    [],                 ["CTRL","SHIFT","C"],["H"],        ["I"],    ["CTRL","S"],
+]
+
 # Layer templates — name → partial layer overrides
 LAYER_TEMPLATES = {
     "Blank": {},
     "Fusion 360": {
         "sm_active": True,
         "sm_orbit_mods": ["SHIFT"], "sm_pan_mods": [],
+        "keys": _make_template_keys(_KEYS_FUSION),
     },
     "Onshape": {
         "sm_active": True,
         "sm_orbit_mods": [], "sm_pan_mods": ["CTRL"],
+        "keys": _make_template_keys(_KEYS_ONSHAPE),
     },
     "SolidWorks": {
         "sm_active": True,
         "sm_orbit_mods": [], "sm_pan_mods": ["CTRL"],
+        "keys": _make_template_keys(_KEYS_SOLIDWORKS),
     },
     "Blender": {
         "sm_active": True,
         "sm_orbit_mods": [], "sm_pan_mods": ["SHIFT"],
+        "keys": _make_template_keys(_KEYS_BLENDER),
     },
     "Maya": {
         "sm_active": True,
         "sm_orbit_mods": ["ALT"], "sm_pan_mods": ["ALT"],
+        "keys": _make_template_keys(_KEYS_MAYA),
     },
     "FreeCAD": {
         "sm_active": True,
         "sm_orbit_mods": [], "sm_pan_mods": ["CTRL"],
+        "keys": _make_template_keys(_KEYS_FREECAD),
     },
 }
 

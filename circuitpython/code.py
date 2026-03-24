@@ -110,12 +110,18 @@ def _blank_layer(name="Layer"):
 
 def _default_layer():
     layer = _blank_layer("Default")
+    # Windows standard shortcuts — Ctrl-based
+    # Layout:  [0]  [1]  [2]   ·    ·
+    #          [5]  [6]  [7]   ·    ·
+    #          [10] [11] [12] [13] [14]
+    #          [15] [16] [17] [18] [19]
+    #           ·   [21] [22] [23] [24]
     defaults = [
-        ["GUI","C"],       ["GUI","V"],   ["GUI","A"],       [], [],
-        ["GUI","ALT","V"], ["GUI","F"],   ["ESCAPE"],        [], [],
-        ["HOME"],          ["E"],         ["GUI","Z"],   ["SPACE"], ["L"],
-        ["SHIFT"],         ["GUI"],       ["UP"],        ["TAB"],   ["RIGHT_CONTROL"],
-        [],                ["LEFT"],      ["DOWN"],      ["RIGHT"], ["GUI","S"],
+        ["CTRL","Z"],     ["CTRL","Y"],   ["CTRL","A"],      [], [],
+        ["CTRL","X"],     ["CTRL","C"],   ["CTRL","V"],      [], [],
+        ["ESCAPE"],       ["CTRL","F"],   ["CTRL","S"],  ["DELETE"], ["BACKSPACE"],
+        ["SHIFT"],        ["CTRL"],       ["UP"],        ["TAB"],   ["ENTER"],
+        [],               ["LEFT"],       ["DOWN"],      ["RIGHT"], ["CTRL","SHIFT","S"],
     ]
     for i, tap in enumerate(defaults):
         layer["keys"][i]["tap"] = tap
@@ -1016,7 +1022,7 @@ def handle_command(raw):
         else:
             new_layer = _blank_layer(name)
         # Allow overriding specific fields (for templates)
-        for k in ("sm_orbit_mods","sm_pan_mods","sm_active",
+        for k in ("keys","sm_orbit_mods","sm_pan_mods","sm_active",
                    "enc1_mode","enc2_mode","enc1_sw","enc2_sw"):
             if k in cmd:
                 new_layer[k] = cmd[k]
