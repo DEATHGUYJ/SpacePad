@@ -40,7 +40,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 - Unlimited layers with momentary (MO) layer switching via a key stack
 - Per-key configuration: tap action, hold action, tap/hold toggle, multi-step macros with delays, key repeat, mouse button hold, and encoder speed modification
 - Non-blocking MLX90393 state machine with a custom-built I²C driver — no external magnetometer library needed; uses raw I²C commands with pre-allocated buffers so the main loop never sleeps waiting for sensor data
-- Space mouse with configurable sensitivity, deadzone, Z-threshold, low-pass filter, acceleration curve, orbit enter/exit timing, and Z-axis mode (zoom or pan)
+- Space mouse with configurable sensitivity, deadzone, Z-threshold, low-pass filter, acceleration curve, orbit enter/exit timing, and Z-axis mode (zoom or pan). **Orbit and pan key combos are configurable per-layer** — supports Fusion 360 (Shift+MMB), Onshape/SolidWorks (MMB), Blender (MMB), Maya (Alt+MMB), and custom combos
 - Joystick with boot-time auto-calibration, fractional sub-pixel accumulators for smooth movement, configurable deadzone/speed/inversion
 - Encoder 2 zoom override: hold the extra button to temporarily switch encoder 2 to zoom mode
 - CRC32-checksummed settings persistence to on-board flash (`settings.json`)
@@ -56,7 +56,7 @@ A single application that serves as both the full configurator GUI and a backgro
 
 **Configuration tabs (5 streamlined tabs, down from 7):**
 - **Matrix** — visual key grid with a side panel editor. Click any key to edit its tap/hold/macro/type inline; click "EDIT FULL..." for the complete key editor dialog with keystroke capture. Ghost positions (5 unused matrix slots) are visually dimmed and disabled
-- **Layers** — add, remove, rename layers; toggle space mouse per layer; encoder modes, switch actions, speed, and invert are configured here per-layer alongside the layer they belong to; plus tap/hold threshold, key repeat, and extra button settings
+- **Layers** — add, remove, rename layers; toggle space mouse per layer; **orbit/pan key combo presets per-layer** (Fusion 360, Onshape, Blender, etc.); encoder modes, switch actions, speed, and invert are configured here per-layer alongside the layer they belong to; plus tap/hold threshold, key repeat, and extra button settings. New layers can be created from **app templates** or by **copying an existing layer**
 - **Input** — joystick (speed, deadzone, axis inversion, click action) and space mouse (sensitivity, deadzone, Z-threshold, filter, acceleration curve, orbit hysteresis, Z-mode, zero calibration) in one place
 - **Profiles** — app-to-layer mapping with live process scanner, default fallback layer, real-time foreground app display, auto-switch toggle, and profile import/export
 - **Visualizer** — real-time key press heatmap, joystick XY plot, space mouse XYZ bar meters, orbit/pan state indicators, and boot health readout
@@ -165,7 +165,7 @@ This produces `SpacePad Configurator.exe` in the `dist/` folder — a single exe
 
 ### Space Mouse
 - The CJMCU-90393 (MLX90393) sensor detects magnetic field changes when you tilt or move a magnet above it.
-- When the XY displacement exceeds the deadzone for longer than the orbit-enter time, the firmware holds Shift + Middle Mouse Button to orbit in CAD applications (Fusion 360, Blender, SolidWorks, etc.).
+- When the XY displacement exceeds the deadzone for longer than the orbit-enter time, the firmware holds the configured orbit modifier keys + Middle Mouse Button to orbit in CAD applications. The orbit/pan key combos are set per-layer, with built-in templates for Fusion 360, Onshape, SolidWorks, Blender, Maya, and FreeCAD.
 - The Z axis can be configured for scroll-wheel zoom or middle-button vertical pan.
 - Enable the space mouse per-layer in the Layers tab — it only activates on layers where you need it.
 

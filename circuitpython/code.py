@@ -103,7 +103,9 @@ def _blank_layer(name="Layer"):
         "keys":[_blank_key() for _ in range(25)],
         "enc1_mode":"H_SCROLL", "enc2_mode":"V_SCROLL",
         "enc1_sw":"RIGHT_CLICK", "enc2_sw":"HOME",
-        "sm_active":False,   # space mouse only active on layers where needed
+        "sm_active":False,
+        "sm_orbit_mods":["SHIFT"],  # keys held during orbit (+ MMB always)
+        "sm_pan_mods":[],           # keys held during pan (+ MMB always)
     }
 
 def _default_layer():
@@ -455,12 +457,15 @@ if i2c:
 
 class SpaceMouse:
     __slots__ = ("fx","fy","fz","is_orbiting","is_panning",
-                 "_above_since","_below_since","_zoom_accum")
+                 "_above_since","_below_since","_zoom_accum",
+                 "_orbit_kc","_pan_kc")
     def __init__(self):
         self.fx = self.fy = self.fz = 0.0
         self.is_orbiting = self.is_panning = False
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
+        self._orbit_kc = []   # resolved keycodes held during orbit
+        self._pan_kc   = []   # resolved keycodes held during pan
 
     def recalibrate(self):
         global _mlx_ox, _mlx_oy, _mlx_oz
@@ -479,10 +484,15 @@ class SpaceMouse:
     def safety_release(self):
         if self.is_orbiting:
             mouse.release(Mouse.MIDDLE_BUTTON)
-            kbd.release(Keycode.SHIFT)
+            for kc in self._orbit_kc:
+                kbd.release(kc)
+            self._orbit_kc = []
             self.is_orbiting = False
         if self.is_panning:
             mouse.release(Mouse.MIDDLE_BUTTON)
+            for kc in self._pan_kc:
+                kbd.release(kc)
+            self._pan_kc = []
             self.is_panning = False
         self.fx = self.fy = self.fz = 0.0
         self._above_since = self._below_since = None
@@ -525,7 +535,7 @@ class SpaceMouse:
         return delta if v > 0 else -delta
 
     def _process(self, now):
-        # Read all needed values from cache once — no dict lookups inside branches
+        lay   = _active_layer()
         dz    = SC.sm_deadzone
         zt    = SC.sm_z_threshold
         sens  = SC.sm_sensitivity
@@ -535,7 +545,7 @@ class SpaceMouse:
         fy    = self.fy
 
         xy_active = abs(fx) > dz or abs(fy) > dz
-        inv_s10 = SC.sm_inv_s10  # cached reciprocal — no division on hot path
+        inv_s10 = SC.sm_inv_s10
 
         if xy_active:
             self._below_since = None
@@ -543,7 +553,11 @@ class SpaceMouse:
                 self._above_since = now
             elif now - self._above_since >= enter:
                 if not self.is_orbiting:
-                    kbd.press(Keycode.SHIFT)
+                    # Press orbit modifiers from layer config
+                    mods = lay.get("sm_orbit_mods", ["SHIFT"]) if lay else ["SHIFT"]
+                    self._orbit_kc = resolve(mods)
+                    for kc in self._orbit_kc:
+                        kbd.press(kc)
                     mouse.press(Mouse.MIDDLE_BUTTON)
                     self.is_orbiting = True
         else:
@@ -553,7 +567,9 @@ class SpaceMouse:
                     self._below_since = now
                 elif now - self._below_since >= exit_:
                     mouse.release(Mouse.MIDDLE_BUTTON)
-                    kbd.release(Keycode.SHIFT)
+                    for kc in self._orbit_kc:
+                        kbd.release(kc)
+                    self._orbit_kc = []
                     self.is_orbiting = False
                     self._below_since = None
 
@@ -580,6 +596,11 @@ class SpaceMouse:
         elif z_mode == "PAN":
             if abs(fz) > zt:
                 if not self.is_panning:
+                    # Press pan modifiers from layer config
+                    mods = lay.get("sm_pan_mods", []) if lay else []
+                    self._pan_kc = resolve(mods)
+                    for kc in self._pan_kc:
+                        kbd.press(kc)
                     mouse.press(Mouse.MIDDLE_BUTTON)
                     self.is_panning = True
                 delta = int(fz / sens) * -1
@@ -589,6 +610,9 @@ class SpaceMouse:
             else:
                 if self.is_panning:
                     mouse.release(Mouse.MIDDLE_BUTTON)
+                    for kc in self._pan_kc:
+                        kbd.release(kc)
+                    self._pan_kc = []
                     self.is_panning = False
 
 sm = SpaceMouse()
@@ -984,8 +1008,20 @@ def handle_command(raw):
 
     elif action == "add_layer":
         name = cmd.get("name", "Layer " + str(len(cfg["layers"])+1))
-        cfg["layers"].append(_blank_layer(name))
-        send_json({"event":"ack_add_layer","index":len(cfg["layers"])-1,"name":name})
+        src  = cmd.get("copy_from")   # optional: index of layer to copy
+        layers = cfg["layers"]
+        if src is not None and 0 <= src < len(layers):
+            new_layer = _deep_copy_cfg(layers[src])
+            new_layer["name"] = name
+        else:
+            new_layer = _blank_layer(name)
+        # Allow overriding specific fields (for templates)
+        for k in ("sm_orbit_mods","sm_pan_mods","sm_active",
+                   "enc1_mode","enc2_mode","enc1_sw","enc2_sw"):
+            if k in cmd:
+                new_layer[k] = cmd[k]
+        layers.append(new_layer)
+        send_json({"event":"ack_add_layer","index":len(layers)-1,"name":name})
 
     elif action == "remove_layer":
         idx = cmd.get("index",-1)

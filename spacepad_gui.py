@@ -1614,6 +1614,53 @@ ENCODER_MODES = {
     "VOLUME":       "Volume",
 }
 
+# Orbit/Pan modifier presets — label → list of key names held with MMB
+SM_MOD_PRESETS = {
+    "MMB only (no modifier)":      [],
+    "Shift + MMB":                 ["SHIFT"],
+    "Ctrl + MMB":                  ["CTRL"],
+    "Alt + MMB":                   ["ALT"],
+    "Ctrl + Shift + MMB":          ["CTRL", "SHIFT"],
+}
+SM_MOD_LABELS = list(SM_MOD_PRESETS.keys())
+
+def _mods_to_label(mods):
+    """Convert a list of mod names to the matching preset label."""
+    mods_set = set(mods or [])
+    for label, preset in SM_MOD_PRESETS.items():
+        if set(preset) == mods_set:
+            return label
+    return SM_MOD_LABELS[0]
+
+# Layer templates — name → partial layer overrides
+LAYER_TEMPLATES = {
+    "Blank": {},
+    "Fusion 360": {
+        "sm_active": True,
+        "sm_orbit_mods": ["SHIFT"], "sm_pan_mods": [],
+    },
+    "Onshape": {
+        "sm_active": True,
+        "sm_orbit_mods": [], "sm_pan_mods": ["CTRL"],
+    },
+    "SolidWorks": {
+        "sm_active": True,
+        "sm_orbit_mods": [], "sm_pan_mods": ["CTRL"],
+    },
+    "Blender": {
+        "sm_active": True,
+        "sm_orbit_mods": [], "sm_pan_mods": ["SHIFT"],
+    },
+    "Maya": {
+        "sm_active": True,
+        "sm_orbit_mods": ["ALT"], "sm_pan_mods": ["ALT"],
+    },
+    "FreeCAD": {
+        "sm_active": True,
+        "sm_orbit_mods": [], "sm_pan_mods": ["CTRL"],
+    },
+}
+
 # Physical 20-key layout — indices that have no switch (never fire)
 # Col0: rows 0-3, Col1-2: rows 0-4, Col3-4: rows 2-4
 GHOST_KEYS = frozenset([3, 4, 8, 9, 20])
@@ -2047,8 +2094,7 @@ class LayersTab(QWidget):
         # Space mouse per-layer toggle
         sm_card, sm_inner = make_card("SPACE MOUSE  (per layer)")
         sm_desc = QLabel(
-            "Enable the space mouse only on layers where you need it.\n"
-            "When disabled the MLX sensor is not read, reducing CPU load."
+            "Enable the space mouse and configure orbit/pan key combos per layer."
         )
         sm_desc.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
         sm_desc.setWordWrap(True)
@@ -2062,6 +2108,32 @@ class LayersTab(QWidget):
         sm_row.addStretch()
         sm_row.addWidget(self._sm_toggle)
         sm_inner.addLayout(sm_row)
+        sm_inner.addWidget(hsep())
+
+        # Orbit combo
+        orb_row = QHBoxLayout()
+        orb_row.addWidget(QLabel("Orbit:"))
+        self._orbit_combo = QComboBox()
+        self._orbit_combo.addItems(SM_MOD_LABELS)
+        self._orbit_combo.setFixedWidth(220)
+        self._orbit_combo.currentTextChanged.connect(self._send_orbit_mods)
+        orb_row.addWidget(self._orbit_combo)
+        orb_row.addWidget(QLabel("+ MMB"))
+        orb_row.addStretch()
+        sm_inner.addLayout(orb_row)
+
+        # Pan combo
+        pan_row = QHBoxLayout()
+        pan_row.addWidget(QLabel("Pan:"))
+        self._pan_combo = QComboBox()
+        self._pan_combo.addItems(SM_MOD_LABELS)
+        self._pan_combo.setFixedWidth(220)
+        self._pan_combo.currentTextChanged.connect(self._send_pan_mods)
+        pan_row.addWidget(self._pan_combo)
+        pan_row.addWidget(QLabel("+ MMB"))
+        pan_row.addStretch()
+        sm_inner.addLayout(pan_row)
+
         layout.addWidget(sm_card)
 
         # ── Encoder modes (per layer) ──
@@ -2213,7 +2285,14 @@ class LayersTab(QWidget):
         row = self._layer_list.currentRow()
         if row < 0: row = al
         if row < len(layers):
-            self._sm_toggle.setChecked(layers[row].get("sm_active", False))
+            layer = layers[row]
+            self._sm_toggle.setChecked(layer.get("sm_active", False))
+            self._orbit_combo.blockSignals(True)
+            self._orbit_combo.setCurrentText(_mods_to_label(layer.get("sm_orbit_mods", ["SHIFT"])))
+            self._orbit_combo.blockSignals(False)
+            self._pan_combo.blockSignals(True)
+            self._pan_combo.setCurrentText(_mods_to_label(layer.get("sm_pan_mods", [])))
+            self._pan_combo.blockSignals(False)
         self._refresh_enc_modes()
         if "btn_extra1" in cfg: self._btn1_combo.setCurrentText(cfg["btn_extra1"])
         if "tap_hold_ms" in cfg: self._tap_hold_row.set_value(cfg["tap_hold_ms"])
@@ -2237,9 +2316,17 @@ class LayersTab(QWidget):
         layers = self._cfg.get("layers", [])
         if not layers or row < 0 or row >= len(layers):
             return
+        layer = layers[row]
         self._sm_toggle.blockSignals(True)
-        self._sm_toggle.setChecked(layers[row].get("sm_active", False))
+        self._sm_toggle.setChecked(layer.get("sm_active", False))
         self._sm_toggle.blockSignals(False)
+        # Orbit/pan combos
+        self._orbit_combo.blockSignals(True)
+        self._orbit_combo.setCurrentText(_mods_to_label(layer.get("sm_orbit_mods", ["SHIFT"])))
+        self._orbit_combo.blockSignals(False)
+        self._pan_combo.blockSignals(True)
+        self._pan_combo.setCurrentText(_mods_to_label(layer.get("sm_pan_mods", [])))
+        self._pan_combo.blockSignals(False)
         self._refresh_enc_modes()
 
     def _refresh_enc_modes(self):
@@ -2289,10 +2376,102 @@ class LayersTab(QWidget):
                               "key":"sm_active","value":val})
             self.apply_config(self._cfg)
 
+    def _send_orbit_mods(self, label):
+        row = self._layer_list.currentRow()
+        if row < 0: return
+        mods = SM_MOD_PRESETS.get(label, ["SHIFT"])
+        layers = self._cfg.get("layers", [])
+        if row < len(layers):
+            layers[row]["sm_orbit_mods"] = mods
+            self.serial.send({"action":"set_layer_prop","layer":row,
+                              "key":"sm_orbit_mods","value":mods})
+
+    def _send_pan_mods(self, label):
+        row = self._layer_list.currentRow()
+        if row < 0: return
+        mods = SM_MOD_PRESETS.get(label, [])
+        layers = self._cfg.get("layers", [])
+        if row < len(layers):
+            layers[row]["sm_pan_mods"] = mods
+            self.serial.send({"action":"set_layer_prop","layer":row,
+                              "key":"sm_pan_mods","value":mods})
+
     def _add(self):
-        name, ok = QInputDialog.getText(self, "New Layer", "Layer name:")
-        if ok and name:
-            self.serial.send({"action":"add_layer","name":name})
+        dlg = QDialog(self)
+        dlg.setWindowTitle("Add Layer")
+        dlg.setMinimumWidth(360)
+        lay = QVBoxLayout(dlg)
+
+        # Name
+        name_row = QHBoxLayout()
+        name_row.addWidget(QLabel("Name:"))
+        name_edit = QLineEdit()
+        name_edit.setPlaceholderText("Layer name")
+        name_row.addWidget(name_edit)
+        lay.addLayout(name_row)
+
+        lay.addWidget(hsep())
+
+        # Source: template or copy
+        src_group = QButtonGroup(dlg)
+        rb_blank = QRadioButton("Blank layer")
+        rb_template = QRadioButton("From template:")
+        rb_copy = QRadioButton("Copy existing layer:")
+        rb_blank.setChecked(True)
+        src_group.addButton(rb_blank)
+        src_group.addButton(rb_template)
+        src_group.addButton(rb_copy)
+        lay.addWidget(rb_blank)
+
+        # Template row
+        tmpl_row = QHBoxLayout()
+        tmpl_row.addWidget(rb_template)
+        tmpl_combo = QComboBox()
+        tmpl_combo.addItems([k for k in LAYER_TEMPLATES.keys() if k != "Blank"])
+        tmpl_combo.setFixedWidth(200)
+        tmpl_row.addWidget(tmpl_combo)
+        tmpl_row.addStretch()
+        lay.addLayout(tmpl_row)
+
+        # Copy row
+        copy_row = QHBoxLayout()
+        copy_row.addWidget(rb_copy)
+        copy_combo = QComboBox()
+        layers = self._cfg.get("layers", [])
+        for i, l in enumerate(layers):
+            copy_combo.addItem(f"{i}: {l.get('name','')}")
+        copy_combo.setFixedWidth(200)
+        copy_row.addWidget(copy_combo)
+        copy_row.addStretch()
+        lay.addLayout(copy_row)
+
+        lay.addWidget(hsep())
+
+        # Buttons
+        btn_row = QHBoxLayout()
+        btn_row.addStretch()
+        ok_btn = accent_btn("ADD")
+        cancel_btn = QPushButton("CANCEL")
+        ok_btn.clicked.connect(dlg.accept)
+        cancel_btn.clicked.connect(dlg.reject)
+        btn_row.addWidget(cancel_btn)
+        btn_row.addWidget(ok_btn)
+        lay.addLayout(btn_row)
+
+        if dlg.exec() != QDialog.Accepted:
+            return
+        name = name_edit.text().strip() or f"Layer {len(layers)}"
+
+        cmd = {"action": "add_layer", "name": name}
+        if rb_template.isChecked():
+            tmpl_name = tmpl_combo.currentText()
+            tmpl = LAYER_TEMPLATES.get(tmpl_name, {})
+            cmd.update(tmpl)
+            if not name_edit.text().strip():
+                cmd["name"] = tmpl_name
+        elif rb_copy.isChecked():
+            cmd["copy_from"] = copy_combo.currentIndex()
+        self.serial.send(cmd)
 
     def _remove(self):
         row = self._layer_list.currentRow()
