@@ -3451,6 +3451,12 @@ class MainWindow(QMainWindow):
         self._tray_minimized_action.triggered.connect(self._on_launch_minimized_toggle)
         tray_menu.addAction(self._tray_minimized_action)
 
+        self._tray_startup_action = QAction("Start with Windows", self)
+        self._tray_startup_action.setCheckable(True)
+        self._tray_startup_action.setChecked(self._is_startup_enabled())
+        self._tray_startup_action.triggered.connect(self._on_startup_toggle)
+        tray_menu.addAction(self._tray_startup_action)
+
         tray_menu.addSeparator()
 
         quit_action = QAction("Quit", self)
@@ -3664,6 +3670,63 @@ class MainWindow(QMainWindow):
 
     def _on_launch_minimized_toggle(self, checked):
         self._settings.setValue("launch_minimized", checked)
+
+    _STARTUP_REG_KEY = r"Software\Microsoft\Windows\CurrentVersion\Run"
+    _STARTUP_APP_NAME = "SpacePad"
+
+    def _get_startup_command(self):
+        """Build the startup command for the current execution mode."""
+        import os
+        if getattr(sys, 'frozen', False):
+            # Running as PyInstaller .exe
+            return f'"{sys.executable}" --minimized'
+        else:
+            # Running as Python script
+            script = os.path.abspath(sys.argv[0])
+            return f'"{sys.executable}" "{script}" --minimized'
+
+    def _is_startup_enabled(self):
+        """Check if SpacePad is in the Windows startup registry."""
+        if sys.platform != "win32":
+            return False
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._STARTUP_REG_KEY, 0, winreg.KEY_READ)
+            try:
+                winreg.QueryValueEx(key, self._STARTUP_APP_NAME)
+                return True
+            except FileNotFoundError:
+                return False
+            finally:
+                winreg.CloseKey(key)
+        except Exception:
+            return False
+
+    def _on_startup_toggle(self, checked):
+        """Add or remove SpacePad from Windows startup."""
+        if sys.platform != "win32":
+            return
+        try:
+            import winreg
+            key = winreg.OpenKey(winreg.HKEY_CURRENT_USER, self._STARTUP_REG_KEY, 0, winreg.KEY_WRITE)
+            try:
+                if checked:
+                    winreg.SetValueEx(key, self._STARTUP_APP_NAME, 0, winreg.REG_SZ,
+                                      self._get_startup_command())
+                    self._settings.setValue("launch_minimized", True)
+                    self._tray_minimized_action.setChecked(True)
+                    self._log("SpacePad added to Windows startup (minimized)")
+                else:
+                    try:
+                        winreg.DeleteValue(key, self._STARTUP_APP_NAME)
+                    except FileNotFoundError:
+                        pass
+                    self._log("SpacePad removed from Windows startup")
+            finally:
+                winreg.CloseKey(key)
+        except Exception as e:
+            self._log(f"Startup toggle failed: {e}")
+            self._tray_startup_action.setChecked(not checked)
 
     def _real_quit(self):
         if self._unsaved:
