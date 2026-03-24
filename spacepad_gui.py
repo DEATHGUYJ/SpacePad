@@ -23,6 +23,7 @@ from PySide6.QtCore import (
 from PySide6.QtGui import (
     QPainter, QPen, QBrush, QColor, QFont, QPalette, QPixmap, QIcon,
     QLinearGradient, QPainterPath, QFontDatabase, QAction, QImage,
+    QShortcut, QKeySequence,
 )
 
 try:
@@ -1764,6 +1765,33 @@ def _key_label_and_type(kc):
         return f"T:{'+'.join(tap)}\nH:{'+'.join(hold)}", "normal"
     return "+".join(tap) if tap else "", "normal"
 
+def _key_tooltip(kc):
+    """Build a rich tooltip showing full key configuration."""
+    parts = []
+    kt = kc.get("key_type", "normal")
+    if kt == "mo":
+        parts.append(f"Type: Momentary Layer {kc.get('mo_layer', 0)}")
+    elif kt == "mouse_hold":
+        parts.append(f"Type: Mouse Hold ({kc.get('mouse_button', 'LEFT')})")
+    elif kt == "enc_mod":
+        parts.append(f"Type: Encoder Modifier (×{kc.get('enc_mod_factor', 0.1):.1f})")
+    else:
+        tap = kc.get("tap", [])
+        hold = kc.get("hold", [])
+        if tap:
+            parts.append(f"Tap: {'+'.join(tap)}")
+        if hold and kc.get("tap_hold_enabled"):
+            parts.append(f"Hold: {'+'.join(hold)}")
+    macro = kc.get("macro")
+    if macro:
+        parts.append(f"Macro: {len(macro)} steps")
+    rep = kc.get("key_repeat")
+    if rep is True:
+        parts.append("Repeat: ON")
+    elif rep is False:
+        parts.append("Repeat: OFF")
+    return "\n".join(parts) if parts else "Empty key"
+
 
 class MatrixTab(QWidget):
     key_updated = Signal(int, int, dict)
@@ -1790,7 +1818,7 @@ class MatrixTab(QWidget):
         self._layer_combo.currentIndexChanged.connect(self._on_layer_change)
         top.addWidget(self._layer_combo)
         top.addStretch()
-        hint = QLabel("Click a key to edit it in the side panel")
+        hint = QLabel("Click = side panel  •  Double-click = full editor")
         hint.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 11px;")
         top.addWidget(hint)
         layout.addLayout(top)
@@ -1820,7 +1848,7 @@ class MatrixTab(QWidget):
             else:
                 btn = KeyButton(i)
                 btn.clicked.connect(lambda checked=False, idx=i: self._select_key(idx))
-                btn.doubleClicked.connect(lambda idx: self._select_key(idx))
+                btn.doubleClicked.connect(lambda idx: self._open_full_editor(idx))
             grid.addWidget(btn, r, c)
             self._btns.append(btn)
         grid_inner.addLayout(grid)
@@ -2114,6 +2142,7 @@ class MatrixTab(QWidget):
             kc = keys[i] if i < len(keys) else {}
             label, kt = _key_label_and_type(kc)
             btn.set_key_data(label, kt)
+            btn.setToolTip(_key_tooltip(kc))
 
     def flash_key(self, idx):
         if idx not in GHOST_KEYS and 0 <= idx < len(self._btns):
@@ -2719,7 +2748,15 @@ class InputTab(QWidget):
         zero_btn.clicked.connect(self._do_zero)
         self._zero_lbl = QLabel("")
         self._zero_lbl.setStyleSheet(f"color: {T.GREEN}; font-size: 11px;")
+        reset_btn = QPushButton("↺  RESET DEFAULTS")
+        reset_btn.setToolTip("Reset all space mouse settings to factory defaults")
+        reset_btn.setStyleSheet(
+            f"background: {T.SURFACE3}; color: {T.TEXT_DIM}; font-weight: 600;"
+            f" border: 1px solid {T.BORDER2}; border-radius: 6px; padding: 7px 14px;"
+        )
+        reset_btn.clicked.connect(self._reset_sm_defaults)
         zero_row.addWidget(zero_btn)
+        zero_row.addWidget(reset_btn)
         zero_row.addWidget(self._zero_lbl)
         zero_row.addStretch()
         layout.addLayout(zero_row)
@@ -2744,6 +2781,22 @@ class InputTab(QWidget):
             f"Zeroed ✓  ({offsets[0]:.1f}, {offsets[1]:.1f}, {offsets[2]:.1f})"
         )
         self._zero_lbl.setStyleSheet(f"color: {T.GREEN}; font-size: 11px;")
+
+    def _reset_sm_defaults(self):
+        """Reset all space mouse settings to factory defaults."""
+        defaults = {
+            "sm_sensitivity": 15.0,  "sm_deadzone": 100.0,
+            "sm_z_threshold": 100.0, "sm_filter": 0.25,
+            "sm_adapt": 0.003,       "sm_accel": True,
+            "sm_accel_curve": 2.0,   "sm_z_mode": "ZOOM",
+            "sm_orbit_enter_ms": 40, "sm_orbit_exit_ms": 80,
+        }
+        for k, v in defaults.items():
+            self.serial.send({"action": "set", "key": k, "value": v})
+        # Refresh sliders/toggles to match
+        self.apply_config(defaults)
+        self._zero_lbl.setText("Defaults restored")
+        self._zero_lbl.setStyleSheet(f"color: {T.BLUE_LT}; font-size: 11px;")
 
     def apply_config(self, cfg):
         # Joystick
@@ -3354,6 +3407,9 @@ class MainWindow(QMainWindow):
         self._save_flash_timer.setSingleShot(True)
         self._save_flash_timer.timeout.connect(self._reset_save_btn)
 
+        # Keyboard shortcuts
+        QShortcut(QKeySequence("Ctrl+S"), self, self._save_to_pico)
+
         # Auto-connect to last known port
         QTimer.singleShot(500, self._try_auto_connect)
 
@@ -3685,11 +3741,19 @@ class MainWindow(QMainWindow):
     def _mark_unsaved(self):
         if not self._unsaved:
             self._unsaved = True
-            self.setWindowTitle("SpacePad Configurator  ●")
+            self._update_title()
 
     def _mark_saved(self):
         self._unsaved = False
-        self.setWindowTitle("SpacePad Configurator")
+        self._update_title()
+
+    def _update_title(self):
+        layer = self._cfg.get("active_layer", 0)
+        layers = self._cfg.get("layers", [])
+        lname = layers[layer]["name"] if layer < len(layers) else ""
+        dot = "  ●" if self._unsaved else ""
+        layer_part = f"  —  [{layer}] {lname}" if lname else ""
+        self.setWindowTitle(f"SpacePad Configurator{layer_part}{dot}")
 
     # ── Message handler ───────────────────────────────────────
 
@@ -3810,6 +3874,7 @@ class MainWindow(QMainWindow):
         self._tab_layers.set_active(idx, name)
         self._tab_layers.set_sm_active(sm_active)   # keep sm toggle in sync
         self._tab_vis.set_layer(idx, name, enc1, enc2)
+        self._update_title()
 
     def _on_passthrough_changed(self, val):
         action = "passthrough_on" if val else "passthrough_off"
