@@ -400,11 +400,13 @@ if i2c:
         _addr_ref = _MLX_ADDR
 
         class _MLXReader:
-            __slots__ = ("x","y","z","_state","_req_time")
+            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count")
             def __init__(self):
                 self.x = self.y = self.z = 0
                 self._state    = 0       # 0=IDLE, 1=WAITING
                 self._req_time = 0.0
+                self._ok_count  = 0
+                self._err_count = 0
 
             def tick(self, now):
                 """Call every main loop iteration. Returns True when new XYZ is ready."""
@@ -414,8 +416,10 @@ if i2c:
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_MEAS)
                         self._req_time = now
                         self._state = 1
-                    except BaseException:
-                        pass
+                    except BaseException as e:
+                        self._err_count += 1
+                        if self._err_count <= 3:
+                            send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
                 else:
                     # Need at least 1.5ms for conversion — skip early polls
@@ -430,9 +434,12 @@ if i2c:
                             self.y = _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4])
                             self.z = _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6])
                             self._state = 0
+                            self._ok_count += 1
                             return True
-                    except BaseException:
-                        pass
+                    except BaseException as e:
+                        self._err_count += 1
+                        if self._err_count <= 3:
+                            send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
                     # Timeout after 100ms — reset to avoid getting stuck
                     if now - self._req_time > 0.1:
                         self._state = 0
@@ -1182,7 +1189,11 @@ def handle_command(raw):
         if ok: lcd.flash("Saved!")
 
     elif action == "ping":
-        send_json({"event":"pong"})
+        diag = {"event":"pong","sm_active":SC.sm_active,"mlx":mlx is not None}
+        if mlx:
+            diag["mlx_ok"] = mlx._ok_count
+            diag["mlx_err"] = mlx._err_count
+        send_json(diag)
 
     else:
         send_json({"error":"unknown_action","action":action})
@@ -1384,7 +1395,9 @@ while True:
             sys.stdout.write(
                 '{"event":"sm_data","x":' + str(round(sm.fx, 1)) +
                 ',"y":' + str(round(sm.fy, 1)) +
-                ',"z":' + str(round(sm.fz, 1)) + '}\n'
+                ',"z":' + str(round(sm.fz, 1)) +
+                ',"ok":' + str(mlx._ok_count) +
+                ',"err":' + str(mlx._err_count) + '}\n'
             )
         last_telemetry = now
 
