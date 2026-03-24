@@ -472,6 +472,9 @@ try:
 
     _lcd_bus = fourwire.FourWire(_lcd_spi, command=LCD_DC, chip_select=LCD_CS, reset=LCD_RST)
     _lcd = adafruit_st7789.ST7789(_lcd_bus, width=320, height=240, rotation=90)
+    _lcd.auto_refresh = False   # CRITICAL: disable background refresh —
+                                # it interrupts I2C transactions and breaks
+                                # the MLX magnetometer non-blocking reader
 
     # Backlight on
     _bl = digitalio.DigitalInOut(LCD_BL)
@@ -772,6 +775,7 @@ if lcd_ok:
                 else:
                     self._lbl_status.text = ""
 
+            self._display.refresh()   # manual refresh since auto_refresh is off
             self._dirty     = False
             self._last_draw = now
 
