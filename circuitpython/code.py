@@ -453,6 +453,9 @@ if i2c:
         mlx = None
 
 # ST7789 LCD — SPI on free GPIO pins
+# Guarded: if displayio import or SPI init breaks I2C, we skip the LCD
+# and re-init I2C so the MLX magnetometer keeps working.
+_lcd = None
 try:
     import displayio
     import fourwire
@@ -460,10 +463,6 @@ try:
     from adafruit_display_text import label as _dlabel
     import adafruit_st7789
     import digitalio
-
-    # NOTE: do NOT call displayio.release_displays() here —
-    # on RP2040 it releases PIO state machines which breaks
-    # the I2C bus used by the MLX90393 magnetometer.
 
     _lcd_spi = busio.SPI(clock=LCD_SCK, MOSI=LCD_MOSI)
     send_json({"event": "lcd_spi", "mode": "busio"})
@@ -480,7 +479,33 @@ try:
     send_json({"event": "lcd_ok", "width": 320, "height": 240})
 except Exception as e:
     send_json({"event": "lcd_error", "detail": str(e)})
-    _lcd = None
+
+# Verify I2C bus survived LCD init — displayio can steal PIO resources
+if i2c and mlx_ok:
+    try:
+        while not i2c.try_lock():
+            pass
+        _post_scan = i2c.scan()
+        i2c.unlock()
+        if 0x0C not in _post_scan:
+            send_json({"event": "i2c_post_lcd_fail", "found": [hex(x) for x in _post_scan]})
+            # Re-init I2C bus
+            i2c.deinit()
+            i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
+            send_json({"event": "i2c_reinit"})
+            # Update MLX reader references
+            _i2c_ref = i2c
+        else:
+            send_json({"event": "i2c_post_lcd_ok"})
+    except Exception as e:
+        send_json({"event": "i2c_post_lcd_err", "detail": str(e)})
+        try:
+            i2c.deinit()
+        except Exception:
+            pass
+        i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
+        _i2c_ref = i2c
+        send_json({"event": "i2c_reinit"})
 
 # ─────────────────────────────────────────────────────────────
 #  7. SPACE MOUSE
