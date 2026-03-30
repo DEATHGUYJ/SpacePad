@@ -678,20 +678,23 @@ class OLEDManager:
         now = time.monotonic()
         if now - self._last_draw < self.MIN_INTERVAL: return
         hw = self.hw
-        hw.fill(0)
-        if now < self._flash_until:
-            hw.text(self._flash_msg, 0, 12, 1)
-        else:
-            lay = _active_layer()
-            name = lay.get("name","?")[:21] if lay else "\u2014"
-            hw.text(name, 0, 0, 1)
-            if lay:
-                m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
-                m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
-                hw.text("1:" + m1 + " 2:" + m2, 0, 10, 1)
-            if enc2_zoom_override:
-                hw.text("ENC2:ZOOM", 0, 22, 1)
-        hw.show()
+        try:
+            hw.fill(0)
+            if now < self._flash_until:
+                hw.text(self._flash_msg, 0, 12, 1)
+            else:
+                lay = _active_layer()
+                name = lay.get("name","?")[:21] if lay else "\u2014"
+                hw.text(name, 0, 0, 1)
+                if lay:
+                    m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
+                    m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
+                    hw.text("1:" + m1 + " 2:" + m2, 0, 10, 1)
+                if enc2_zoom_override:
+                    hw.text("ENC2:ZOOM", 0, 22, 1)
+            hw.show()
+        except Exception:
+            pass   # missing font or I2C error — don't crash the firmware
         self._dirty     = False
         self._last_draw = now
 
