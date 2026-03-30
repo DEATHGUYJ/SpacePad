@@ -411,13 +411,15 @@ if i2c:
         _addr_ref = _MLX_ADDR
 
         class _MLXReader:
-            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count")
+            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count","_err0","_err1")
             def __init__(self):
                 self.x = self.y = self.z = 0
-                self._state    = 0       # 0=IDLE, 1=WAITING
+                self._state    = 0
                 self._req_time = 0.0
                 self._ok_count  = 0
                 self._err_count = 0
+                self._err0 = 0   # state 0 (write) errors
+                self._err1 = 0   # state 1 (read/poll) errors
 
             def tick(self, now):
                 """Call every main loop iteration. Returns True when new XYZ is ready."""
@@ -428,14 +430,14 @@ if i2c:
                         self._state = 1
                     except BaseException as e:
                         self._err_count += 1
+                        self._err0 += 1
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
                 else:
-                    # CJMCU-90393 with default oversampling needs ~50ms for 3-axis conversion
                     elapsed = now - self._req_time
                     if elapsed < 0.05:
-                        return False   # too early — conversion not complete
+                        return False
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         if _MLX_STATUS_BUF[0] & 0x01:
@@ -446,14 +448,14 @@ if i2c:
                             self._state = 0
                             self._ok_count += 1
                             return True
-                        # DRDY not set — wait 10ms before next poll
                         self._req_time = now - 0.04
                     except BaseException as e:
                         self._err_count += 1
+                        self._err1 += 1
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
                     if elapsed > 0.3:
-                        self._state = 0   # timeout — reset and try fresh measurement
+                        self._state = 0
                     return False
 
         mlx = _MLXReader()
@@ -1148,6 +1150,8 @@ def handle_command(raw):
         if mlx:
             diag["mlx_ok"] = mlx._ok_count
             diag["mlx_err"] = mlx._err_count
+            diag["err0"] = mlx._err0   # write errors
+            diag["err1"] = mlx._err1   # read/poll errors
         send_json(diag)
 
     else:
@@ -1210,38 +1214,14 @@ _JOY_INV_SCALE = 1.0 / 500.0
 send_json({"event":"joy_calibrated",
            "cx": _JOY_X_CENTRE, "cy": _JOY_Y_CENTRE})
 
-# ── Pre-loop MLX diagnostic ──────────────────────────────────
-# The blocking reader works at boot but the non-blocking reader fails.
-# Test both methods right before the main loop to identify the gap.
+# ── Ensure MLX is in clean state before main loop ─────────
 if mlx_ok:
-    # Test 1: blocking read (same as calibration)
+    # Do one final blocking read to leave the chip idle
     try:
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
-        send_json({"event":"mlx_preloop_blocking","ok":True,"xyz":[x,y,z]})
+        send_json({"event":"mlx_preloop_ok","xyz":[x,y,z]})
     except Exception as e:
-        send_json({"event":"mlx_preloop_blocking","ok":False,"detail":str(e)})
-
-    # Test 2: verify _i2c_ref is the same object
-    send_json({"event":"mlx_preloop_refs",
-               "same_bus": _i2c_ref is i2c,
-               "addr": hex(_addr_ref)})
-
-    # Test 3: manual non-blocking sequence step by step
-    try:
-        _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_MEAS)
-        send_json({"event":"mlx_preloop_write","ok":True})
-        time.sleep(0.015)
-        _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
-        drdy = _MLX_STATUS_BUF[0] & 0x01
-        send_json({"event":"mlx_preloop_poll","ok":True,"drdy":drdy,"status":hex(_MLX_STATUS_BUF[0])})
-        if drdy:
-            _mlx_transceive(_i2c_ref, _addr_ref, _MLX_CMD_READ, _MLX_DATA_BUF)
-            send_json({"event":"mlx_preloop_read","ok":True,
-                       "xyz":[_s16(_MLX_DATA_BUF[1],_MLX_DATA_BUF[2]),
-                              _s16(_MLX_DATA_BUF[3],_MLX_DATA_BUF[4]),
-                              _s16(_MLX_DATA_BUF[5],_MLX_DATA_BUF[6])]})
-    except Exception as e:
-        send_json({"event":"mlx_preloop_manual","ok":False,"detail":str(e)})
+        send_json({"event":"mlx_preloop_err","detail":str(e)})
 
 # Fractional accumulators — carry sub-pixel movement between ticks to eliminate stutter
 _joy_accum_x = 0.0
