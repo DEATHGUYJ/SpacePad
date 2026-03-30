@@ -275,9 +275,10 @@ JOY_Y_PIN      = board.GP26
 JOY_SW_PIN     = board.GP22
 BTN_EXTRA1_PIN = board.GP18
 BTN_EXTRA2_PIN = board.GP19
-# MLX90393 + SSD1306 OLED — shared I²C bus 0 (GP16=SDA, GP17=SCL)
-# Different I²C addresses so no conflict: MLX=0x0C, OLED=0x3C
+# MLX90393 — dedicated hardware I²C bus (GP16=SDA, GP17=SCL)
 I2C_SDA, I2C_SCL = board.GP16, board.GP17
+# SSD1306 OLED — separate bitbang I²C bus (GP20=SDA, GP21=SCL)
+OLED_SDA, OLED_SCL = board.GP20, board.GP21
 
 keys = keypad.KeyMatrix(ROW_PINS, COL_PINS, columns_to_anodes=False)
 direct_keys = keypad.Keys(
@@ -294,14 +295,16 @@ joy_x = analogio.AnalogIn(JOY_X_PIN)
 joy_y = analogio.AnalogIn(JOY_Y_PIN)
 
 # ─────────────────────────────────────────────────────────────
-#  6. I2C + MLX90393 + SSD1306
-#  Single shared I²C bus on GP16 (SDA) / GP17 (SCL)
-#  MLX90393 @ 0x0C  —  SSD1306 OLED @ 0x3C  (no address conflict)
+#  6. I2C BUSES + MLX90393 + SSD1306 OLED
+#  Bus 0 (hardware): GP16/GP17 — MLX90393 magnetometer @ 0x0C
+#  Bus 1 (bitbang):  GP20/GP21 — SSD1306 OLED @ 0x3C
+#  Separate buses = zero contention between MLX reads and OLED draws
 # ─────────────────────────────────────────────────────────────
 
-i2c     = None
-mlx     = None
-oled_hw = None
+i2c      = None
+i2c_oled = None
+mlx      = None
+oled_hw  = None
 # Three flat variables instead of a list — avoids index lookups on every sensor tick
 _mlx_ox = 0.0
 _mlx_oy = 0.0
@@ -321,18 +324,26 @@ def _s16(hi, lo):
 
 try:
     i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
-    send_json({"event": "i2c_bus_ok", "bus": "shared", "scl": "GP17", "sda": "GP16"})
+    send_json({"event": "i2c_mlx_ok", "scl": "GP17", "sda": "GP16"})
 except Exception as e:
-    send_json({"event": "i2c_bus_error", "bus": "shared", "detail": str(e)})
+    send_json({"event": "i2c_mlx_error", "detail": str(e)})
+
+# OLED on separate bitbang I2C — doesn't block the MLX bus
+try:
+    import bitbangio
+    i2c_oled = bitbangio.I2C(OLED_SCL, OLED_SDA)
+    send_json({"event": "i2c_oled_ok", "scl": "GP21", "sda": "GP20"})
+except Exception as e:
+    send_json({"event": "i2c_oled_error", "detail": str(e)})
 
 if i2c:
-    # Scan and report all found addresses
+    # Scan MLX bus
     try:
         while not i2c.try_lock():
             pass
         _found = i2c.scan()
         i2c.unlock()
-        send_json({"event": "i2c_scan", "bus": "shared", "found": [hex(x) for x in _found]})
+        send_json({"event": "i2c_scan", "bus": "mlx", "found": [hex(x) for x in _found]})
     except Exception as e:
         send_json({"event": "i2c_scan_error", "detail": str(e)})
 
@@ -400,35 +411,23 @@ if i2c:
         _addr_ref = _MLX_ADDR
 
         class _MLXReader:
-            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count",
-                         "_backoff_until","_consec_err")
+            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count")
             def __init__(self):
                 self.x = self.y = self.z = 0
                 self._state    = 0       # 0=IDLE, 1=WAITING
                 self._req_time = 0.0
                 self._ok_count  = 0
                 self._err_count = 0
-                self._backoff_until = 0.0  # don't retry until this time
-                self._consec_err    = 0    # consecutive errors — drives backoff
 
             def tick(self, now):
                 """Call every main loop iteration. Returns True when new XYZ is ready."""
-                # Backoff: after errors, skip ticks to avoid burning loop time
-                if now < self._backoff_until:
-                    return False
-
                 if self._state == 0:
                     try:
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_MEAS)
                         self._req_time = now
                         self._state = 1
-                        self._consec_err = 0
                     except BaseException as e:
                         self._err_count += 1
-                        self._consec_err += 1
-                        # Exponential backoff: 50ms, 100ms, 200ms, cap at 500ms
-                        bo = min(0.5, 0.05 * (1 << min(self._consec_err, 4)))
-                        self._backoff_until = now + bo
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
@@ -444,13 +443,9 @@ if i2c:
                             self.z = _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6])
                             self._state = 0
                             self._ok_count += 1
-                            self._consec_err = 0
                             return True
                     except BaseException as e:
                         self._err_count += 1
-                        self._consec_err += 1
-                        bo = min(0.5, 0.05 * (1 << min(self._consec_err, 4)))
-                        self._backoff_until = now + bo
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
                     if now - self._req_time > 0.1:
@@ -464,45 +459,17 @@ if i2c:
         send_json({"event": "mlx_error", "detail": str(e)})
         mlx = None
 
-    # SSD1306 OLED
-    try:
-        import adafruit_ssd1306
-        oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c, addr=0x3C)
-        oled_hw.fill(0)
-        oled_hw.show()
-        oled_ok = True
-        send_json({"event": "oled_ok"})
-    except Exception as e:
-        send_json({"event": "oled_error", "detail": str(e)})
-
-    # Verify MLX still responds after OLED init
-    if mlx_ok:
+    # SSD1306 OLED — on separate bitbang I2C bus (GP20/GP21)
+    if i2c_oled:
         try:
-            x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
-            send_json({"event": "mlx_post_oled_ok", "xyz": [x, y, z]})
+            import adafruit_ssd1306
+            oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c_oled, addr=0x3C)
+            oled_hw.fill(0)
+            oled_hw.show()
+            oled_ok = True
+            send_json({"event": "oled_ok"})
         except Exception as e:
-            send_json({"event": "mlx_post_oled_fail", "detail": str(e)})
-            # Bus may be corrupted — reinit
-            try:
-                i2c.deinit()
-            except Exception:
-                pass
-            i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
-            _i2c_ref = i2c
-            send_json({"event": "i2c_reinit"})
-            # Re-init OLED on the fresh bus
-            try:
-                oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c, addr=0x3C)
-                oled_hw.fill(0)
-                oled_hw.show()
-            except Exception:
-                oled_ok = False
-            # Test MLX again
-            try:
-                x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
-                send_json({"event": "mlx_recovered", "xyz": [x, y, z]})
-            except Exception as e2:
-                send_json({"event": "mlx_recovery_failed", "detail": str(e2)})
+            send_json({"event": "oled_error", "detail": str(e)})
 
 # ─────────────────────────────────────────────────────────────
 #  7. SPACE MOUSE
@@ -684,8 +651,7 @@ class NoOpOLED:
 
 class OLEDManager:
     __slots__ = ("hw","_flash_until","_flash_msg","_dirty","_last_draw")
-    MIN_INTERVAL = 0.5   # 2 Hz — status text doesn't need fast refresh
-                         # Keeps bus free for MLX reader most of the time
+    MIN_INTERVAL = 0.15   # ~7 Hz — own bus, no contention with MLX
 
     def __init__(self, hw):
         self.hw = hw
@@ -1398,9 +1364,5 @@ while True:
             )
         last_telemetry = now
 
-    # ── OLED — only update when MLX reader is IDLE (state 0) ──
-    # The SSD1306 show() sends ~512 bytes over I2C (~40ms at 100kHz).
-    # If the MLX is in WAITING state (expecting DRDY), that 40ms bus
-    # lock would cause the MLX measurement to timeout and fail.
-    if not mlx or not SC.sm_active or mlx._state == 0:
-        oled.update()
+    # ── OLED (own I2C bus — no contention with MLX) ────────
+    oled.update()

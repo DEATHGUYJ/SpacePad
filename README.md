@@ -95,10 +95,12 @@ A single application that serves as both the full configurator GUI and a backgro
 | Key matrix columns | GP5 – GP9 | 5 columns (active low, `columns_to_anodes=False`) |
 | Encoder 1 (CLK, DT, SW) | GP10, GP11, GP12 | |
 | Encoder 2 (CLK, DT, SW) | GP13, GP14, GP15 | |
-| I²C SDA (MLX + OLED) | GP16 | Shared bus, CJMCU-90393 @ 0x0C, OLED @ 0x3C |
-| I²C SCL (MLX + OLED) | GP17 | Shared bus, 100 kHz |
+| I²C SDA (MLX) | GP16 | CJMCU-90393 @ 0x0C (hardware I²C) |
+| I²C SCL (MLX) | GP17 | 100 kHz |
 | Extra button 1 | GP18 | Configurable action / enc2 zoom hold |
 | Extra button 2 | GP19 | Layer cycle |
+| OLED SDA | GP20 | SSD1306 @ 0x3C (bitbang I²C) |
+| OLED SCL | GP21 | Separate bus — no contention with MLX |
 | Joystick click | GP22 | Configurable action |
 | Joystick Y axis | GP26 | ADC |
 | Joystick X axis | GP27 | ADC |
@@ -265,7 +267,7 @@ SpacePad/
 | Analog joystick module | 1 | PS2-style dual-axis with click (e.g., KY-023) |
 | CJMCU-90393 magnetometer | 1 | MLX90393-based breakout, I²C address 0x0C, custom driver (no library needed). **Solder the CS and PU jumpers on the back of the board** to enable I²C mode and pull-ups |
 | Neodymium magnet | 1 | Mounted above the CJMCU-90393 on a lever/spring |
-| SSD1306 OLED 128×32 | 1 | I²C, address 0x3C |
+| SSD1306 OLED 128×32 | 1 | I²C address 0x3C, on separate bitbang bus (GP20/GP21) |
 | Tactile buttons | 2 | For extra button 1 (GP18) and layer cycle (GP19) |
 
 For 3D printable parts, see the [`3d files/stl/`](3d%20files/stl/) directory or the [Thingiverse page](https://www.thingiverse.com/thing:7293580).
