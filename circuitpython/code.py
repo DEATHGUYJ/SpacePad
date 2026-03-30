@@ -475,6 +475,35 @@ if i2c:
     except Exception as e:
         send_json({"event": "oled_error", "detail": str(e)})
 
+    # Verify MLX still responds after OLED init
+    if mlx_ok:
+        try:
+            x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
+            send_json({"event": "mlx_post_oled_ok", "xyz": [x, y, z]})
+        except Exception as e:
+            send_json({"event": "mlx_post_oled_fail", "detail": str(e)})
+            # Bus may be corrupted — reinit
+            try:
+                i2c.deinit()
+            except Exception:
+                pass
+            i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
+            _i2c_ref = i2c
+            send_json({"event": "i2c_reinit"})
+            # Re-init OLED on the fresh bus
+            try:
+                oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c, addr=0x3C)
+                oled_hw.fill(0)
+                oled_hw.show()
+            except Exception:
+                oled_ok = False
+            # Test MLX again
+            try:
+                x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
+                send_json({"event": "mlx_recovered", "xyz": [x, y, z]})
+            except Exception as e2:
+                send_json({"event": "mlx_recovery_failed", "detail": str(e2)})
+
 # ─────────────────────────────────────────────────────────────
 #  7. SPACE MOUSE
 # ─────────────────────────────────────────────────────────────
