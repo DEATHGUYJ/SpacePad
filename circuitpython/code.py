@@ -432,8 +432,10 @@ if i2c:
                             send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
                 else:
-                    if now - self._req_time < 0.002:
-                        return False
+                    # MLX90393 needs ~10ms for conversion, then 5ms between polls
+                    elapsed = now - self._req_time
+                    if elapsed < 0.012:
+                        return False   # too early — measurement not ready yet
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         if _MLX_STATUS_BUF[0] & 0x01:
@@ -444,11 +446,13 @@ if i2c:
                             self._state = 0
                             self._ok_count += 1
                             return True
+                        # DRDY not set — wait at least 5ms before next poll
+                        self._req_time = now - 0.007   # so next check is ~5ms later
                     except BaseException as e:
                         self._err_count += 1
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
-                    if now - self._req_time > 0.1:
+                    if elapsed > 0.2:
                         self._state = 0
                     return False
 
