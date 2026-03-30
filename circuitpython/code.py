@@ -400,28 +400,40 @@ if i2c:
         _addr_ref = _MLX_ADDR
 
         class _MLXReader:
-            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count")
+            __slots__ = ("x","y","z","_state","_req_time","_ok_count","_err_count",
+                         "_backoff_until","_consec_err")
             def __init__(self):
                 self.x = self.y = self.z = 0
                 self._state    = 0       # 0=IDLE, 1=WAITING
                 self._req_time = 0.0
                 self._ok_count  = 0
                 self._err_count = 0
+                self._backoff_until = 0.0  # don't retry until this time
+                self._consec_err    = 0    # consecutive errors — drives backoff
 
             def tick(self, now):
                 """Call every main loop iteration. Returns True when new XYZ is ready."""
+                # Backoff: after errors, skip ticks to avoid burning loop time
+                if now < self._backoff_until:
+                    return False
+
                 if self._state == 0:
                     try:
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_MEAS)
                         self._req_time = now
                         self._state = 1
+                        self._consec_err = 0
                     except BaseException as e:
                         self._err_count += 1
-                        if self._err_count <= 3:
+                        self._consec_err += 1
+                        # Exponential backoff: 50ms, 100ms, 200ms, cap at 500ms
+                        bo = min(0.5, 0.05 * (1 << min(self._consec_err, 4)))
+                        self._backoff_until = now + bo
+                        if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
                 else:
-                    if now - self._req_time < 0.0015:
+                    if now - self._req_time < 0.002:
                         return False
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
@@ -432,10 +444,14 @@ if i2c:
                             self.z = _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6])
                             self._state = 0
                             self._ok_count += 1
+                            self._consec_err = 0
                             return True
                     except BaseException as e:
                         self._err_count += 1
-                        if self._err_count <= 3:
+                        self._consec_err += 1
+                        bo = min(0.5, 0.05 * (1 << min(self._consec_err, 4)))
+                        self._backoff_until = now + bo
+                        if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
                     if now - self._req_time > 0.1:
                         self._state = 0
@@ -639,7 +655,8 @@ class NoOpOLED:
 
 class OLEDManager:
     __slots__ = ("hw","_flash_until","_flash_msg","_dirty","_last_draw")
-    MIN_INTERVAL = 0.1
+    MIN_INTERVAL = 0.5   # 2 Hz — status text doesn't need fast refresh
+                         # Keeps bus free for MLX reader most of the time
 
     def __init__(self, hw):
         self.hw = hw
@@ -1349,5 +1366,9 @@ while True:
             )
         last_telemetry = now
 
-    # ── OLED ────────────────────────────────────────────────
-    oled.update()
+    # ── OLED — only update when MLX reader is IDLE (state 0) ──
+    # The SSD1306 show() sends ~512 bytes over I2C (~40ms at 100kHz).
+    # If the MLX is in WAITING state (expecting DRDY), that 40ms bus
+    # lock would cause the MLX measurement to timeout and fail.
+    if not mlx or not SC.sm_active or mlx._state == 0:
+        oled.update()
