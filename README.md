@@ -12,6 +12,36 @@ SpacePad is a fully open-source input device designed for creative professionals
 
 ---
 
+> ## ⚠️ Under Active Development
+>
+> This project is still being built and tested on real hardware. Some features work reliably, some are being debugged. Use at your own risk — breaking changes may happen between commits.
+>
+> ### ✅ Working
+> - 20-key matrix (all keys, tap/hold, macros, MO layers, mouse hold, encoder mod)
+> - Dual rotary encoders (per-layer modes, switch actions, speed, invert)
+> - Analog joystick (mouse cursor, deadzone, calibration, invert, click action)
+> - Extra buttons (layer cycle, configurable action, enc2 zoom hold)
+> - Settings persistence (CRC32 checksum, auto-detect corrupt files)
+> - Desktop GUI configurator (5-tab layout, side panel key editor, layer templates)
+> - System tray auto-layer switching by foreground application
+> - Import/export profiles as JSON
+> - Start with Windows (registry startup option)
+> - Configurable orbit/pan key combos per-layer (Fusion 360, Onshape, Blender, etc.)
+> - Layer templates with pre-populated shortcuts for 6 CAD apps
+> - Copy existing layer when creating new layers
+> - Adaptive EMA filter for space mouse smoothing
+> - Serial protocol (bidirectional JSON, telemetry, passthrough/visualiser mode)
+>
+> ### 🔧 In Progress
+> - **Space mouse (CJMCU-90393)** — sensor is detected and calibrates at boot, but the non-blocking reader in the main loop is not reliably producing data. Blocking reads work; the issue is I2C timing in the non-blocking state machine. Being actively debugged.
+> - **SSD1306 OLED** — now on a separate bitbang I2C bus (GP20/GP21) to avoid contention with the MLX. Initialises and displays text, but depends on the MLX fix for full stability testing.
+>
+> ### ❌ Known Issues
+> - MLX90393 non-blocking reader fails with ENODEV after boot despite correct timing — root cause under investigation
+> - Some keys (13, 14, 18, 19, 24) may be non-functional on certain builds — suspected faulty switches
+
+---
+
 ## Quick Start
 
 1. **Flash CircuitPython 9+** onto the Pico (hold BOOTSEL, drag the `.uf2` file)
