@@ -1210,6 +1210,39 @@ _JOY_INV_SCALE = 1.0 / 500.0
 send_json({"event":"joy_calibrated",
            "cx": _JOY_X_CENTRE, "cy": _JOY_Y_CENTRE})
 
+# ── Pre-loop MLX diagnostic ──────────────────────────────────
+# The blocking reader works at boot but the non-blocking reader fails.
+# Test both methods right before the main loop to identify the gap.
+if mlx_ok:
+    # Test 1: blocking read (same as calibration)
+    try:
+        x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
+        send_json({"event":"mlx_preloop_blocking","ok":True,"xyz":[x,y,z]})
+    except Exception as e:
+        send_json({"event":"mlx_preloop_blocking","ok":False,"detail":str(e)})
+
+    # Test 2: verify _i2c_ref is the same object
+    send_json({"event":"mlx_preloop_refs",
+               "same_bus": _i2c_ref is i2c,
+               "addr": hex(_addr_ref)})
+
+    # Test 3: manual non-blocking sequence step by step
+    try:
+        _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_MEAS)
+        send_json({"event":"mlx_preloop_write","ok":True})
+        time.sleep(0.015)
+        _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
+        drdy = _MLX_STATUS_BUF[0] & 0x01
+        send_json({"event":"mlx_preloop_poll","ok":True,"drdy":drdy,"status":hex(_MLX_STATUS_BUF[0])})
+        if drdy:
+            _mlx_transceive(_i2c_ref, _addr_ref, _MLX_CMD_READ, _MLX_DATA_BUF)
+            send_json({"event":"mlx_preloop_read","ok":True,
+                       "xyz":[_s16(_MLX_DATA_BUF[1],_MLX_DATA_BUF[2]),
+                              _s16(_MLX_DATA_BUF[3],_MLX_DATA_BUF[4]),
+                              _s16(_MLX_DATA_BUF[5],_MLX_DATA_BUF[6])]})
+    except Exception as e:
+        send_json({"event":"mlx_preloop_manual","ok":False,"detail":str(e)})
+
 # Fractional accumulators — carry sub-pixel movement between ticks to eliminate stutter
 _joy_accum_x = 0.0
 _joy_accum_y = 0.0
