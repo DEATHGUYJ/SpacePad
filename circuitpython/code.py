@@ -432,10 +432,10 @@ if i2c:
                             send_json({"event":"mlx_tick_err","state":0,"detail":str(e),"n":self._err_count})
                     return False
                 else:
-                    # MLX90393 needs ~10ms for conversion, then 5ms between polls
+                    # CJMCU-90393 with default oversampling needs ~50ms for 3-axis conversion
                     elapsed = now - self._req_time
-                    if elapsed < 0.012:
-                        return False   # too early — measurement not ready yet
+                    if elapsed < 0.05:
+                        return False   # too early — conversion not complete
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         if _MLX_STATUS_BUF[0] & 0x01:
@@ -446,14 +446,14 @@ if i2c:
                             self._state = 0
                             self._ok_count += 1
                             return True
-                        # DRDY not set — wait at least 5ms before next poll
-                        self._req_time = now - 0.007   # so next check is ~5ms later
+                        # DRDY not set — wait 10ms before next poll
+                        self._req_time = now - 0.04
                     except BaseException as e:
                         self._err_count += 1
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":1,"detail":str(e),"n":self._err_count})
-                    if elapsed > 0.2:
-                        self._state = 0
+                    if elapsed > 0.3:
+                        self._state = 0   # timeout — reset and try fresh measurement
                     return False
 
         mlx = _MLXReader()
