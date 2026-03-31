@@ -36,9 +36,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 >
 > ### 🔧 In Progress
 > - Space mouse thermal drift — the MLX90393 baseline shifts as the chip warms up. Auto-zero on GUI connect helps; may need periodic re-zeroing or high-pass drift correction for long sessions
->
-> ### ❌ Known Issues
-> - Some keys (13, 14, 18, 19, 24) may be non-functional on certain builds — suspected faulty switches
+
 
 ---
 
