@@ -404,31 +404,8 @@ if i2c:
                     _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4]),
                     _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6]))
 
-        # ── No reset needed — chip is fresh from power-on ─────
-        # RT command corrupts the CircuitPython I2C bus on the
-        # CJMCU-90393, even without reading the status byte.
-        # The chip is already in idle state after power-up.
+        # ── Chip is fresh from power-on — no reset needed ─────
         send_json({"event": "mlx_init"})
-
-        # Step-by-step first contact — find exactly where ENODEV occurs
-        try:
-            send_json({"event": "mlx_diag", "step": "sm_write"})
-            _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_SM)
-            send_json({"event": "mlx_diag", "step": "sm_write_ok"})
-        except Exception as e:
-            send_json({"event": "mlx_diag", "step": "sm_write_fail", "d": str(e)})
-            # Raw write test with bus still locked
-            try:
-                while not i2c.try_lock(): pass
-                found = i2c.scan()
-                send_json({"event": "mlx_diag", "step": "rescan", "found": [hex(x) for x in found]})
-                i2c.writeto(0x0C, bytearray([0x3E]))
-                send_json({"event": "mlx_diag", "step": "raw_ok"})
-                i2c.unlock()
-            except Exception as e2:
-                send_json({"event": "mlx_diag", "step": "raw_fail", "d": str(e2)})
-                try: i2c.unlock()
-                except: pass
 
         # ── Test read BEFORE register config ──────────────────
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
