@@ -413,10 +413,12 @@ if i2c:
                     _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6]))
 
         # ── Reset chip to known state ─────────────────────────
-        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)     # exit any mode
+        # EX: exit any mode — status read OK here
+        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
         time.sleep(0.002)
-        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_RT)     # reset
-        time.sleep(0.003)                          # startup sequence
+        # RT: reset — do NOT read status (chip is rebooting, NACKs reads)
+        _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_RT)
+        time.sleep(0.010)   # datasheet says 1.5ms, we give 10ms for safety
         send_json({"event": "mlx_reset"})
 
         # ── Test read BEFORE register config ──────────────────
