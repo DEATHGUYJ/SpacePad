@@ -394,17 +394,20 @@ if i2c:
 
         def _mlx_read_xyz(bus, addr):
             """Blocking single measurement — used for calibration and test reads."""
-            _mlx_cmd(bus, addr, _MLX_CMD_SM)      # start measurement + read status
-            time.sleep(0.01)                       # wait for conversion
-            for _ in range(20):
-                _mlx_read(bus, addr, _MLX_STATUS_BUF)  # poll DRDY
-                if _MLX_STATUS_BUF[0] & 0x01:
-                    break
-                time.sleep(0.005)
-            # Read measurement: send RM command, read status + 6 data bytes
-            _mlx_write(bus, addr, _MLX_CMD_RM)
-            time.sleep(0.001)
-            _mlx_read(bus, addr, _MLX_DATA_BUF)
+            # SM command — just write, don't read status (chip is busy converting)
+            _mlx_write(bus, addr, _MLX_CMD_SM)
+            time.sleep(0.005)   # wait for conversion (1.84ms + margin)
+            # RM command — send read request, get status + 6 data bytes
+            for _ in range(10):
+                _mlx_write(bus, addr, _MLX_CMD_RM)
+                time.sleep(0.001)
+                _mlx_read(bus, addr, _MLX_DATA_BUF)
+                if _MLX_DATA_BUF[0] & 0x01:   # DRDY
+                    return (_s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2]),
+                            _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4]),
+                            _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6]))
+                time.sleep(0.003)
+            # Fallback — return whatever we got
             return (_s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2]),
                     _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4]),
                     _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6]))
@@ -435,6 +438,10 @@ if i2c:
                    "hallconf": reg0v & 0xF,
                    "osr": reg2v & 0x3, "dig_filt": (reg2v >> 2) & 0x7,
                    "tconv_ms": 1.84})
+
+        # Return to idle after register ops
+        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
+        time.sleep(0.002)
 
         # ── Test read + calibration ───────────────────────────
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
@@ -473,9 +480,8 @@ if i2c:
             def tick(self, now):
                 if self._state == 0:
                     try:
-                        # Send SM command AND read status (required by protocol)
+                        # Send SM command — don't read status (chip busy converting)
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_SM)
-                        _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         self._req_time = now
                         self._state = 1
                     except BaseException as e:
