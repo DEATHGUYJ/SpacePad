@@ -407,40 +407,7 @@ if i2c:
         # ── Chip is fresh from power-on — no reset needed ─────
         send_json({"event": "mlx_init"})
 
-        # ── Test read BEFORE register config ──────────────────
-        x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
-        send_json({"event": "mlx_pre_config", "xyz": [x, y, z]})
-
-        # ── Configure registers for fast conversion ───────────
-        st, reg0 = _mlx_read_reg(i2c, _MLX_ADDR, 0x00)
-        send_json({"event": "mlx_reg0_read", "val": hex(reg0), "st": hex(st)})
-        reg0_new = (reg0 & 0xFFF0) | 0x0C
-        st = _mlx_write_reg(i2c, _MLX_ADDR, 0x00, reg0_new)
-        send_json({"event": "mlx_reg0_write", "val": hex(reg0_new), "st": hex(st)})
-
-        st, reg2 = _mlx_read_reg(i2c, _MLX_ADDR, 0x02)
-        send_json({"event": "mlx_reg2_read", "val": hex(reg2), "st": hex(st)})
-        reg2_new = (reg2 & 0xFFE0) | (2 << 2) | 0
-        st = _mlx_write_reg(i2c, _MLX_ADDR, 0x02, reg2_new)
-        send_json({"event": "mlx_reg2_write", "val": hex(reg2_new), "st": hex(st)})
-
-        # Return to idle (bare write — no status read)
-        _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_EX)
-        time.sleep(0.002)
-
-        # Verify
-        _, reg0v = _mlx_read_reg(i2c, _MLX_ADDR, 0x00)
-        _, reg2v = _mlx_read_reg(i2c, _MLX_ADDR, 0x02)
-        send_json({"event": "mlx_config",
-                   "reg0": hex(reg0v), "reg2": hex(reg2v),
-                   "hallconf": reg0v & 0xF,
-                   "osr": reg2v & 0x3, "dig_filt": (reg2v >> 2) & 0x7})
-
-        # EX again before test read (bare write)
-        _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_EX)
-        time.sleep(0.002)
-
-        # ── Test read AFTER register config ───────────────────
+        # ── Test read ─────────────────────────────────────────
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
         send_json({"event": "mlx_found", "address": hex(_MLX_ADDR), "test_xyz": [x, y, z]})
 
@@ -459,8 +426,8 @@ if i2c:
         # State 1 (WAIT_DRDY): bare read status → if DRDY: write RM → WAIT_READ
         # State 2 (WAIT_READ): read 7 data bytes → IDLE
         #
-        # Each I2C operation is a single write OR read with STOP between.
-        # Effective rate: ~60-80 Hz (5ms + 5ms + overhead per cycle)
+        # Default NVRAM settings — conversion time unknown (could be up to 200ms)
+        # Use 10ms initial wait + 5ms poll interval (matches blocking reader)
         _i2c_ref  = i2c
         _addr_ref = _MLX_ADDR
 
@@ -493,8 +460,8 @@ if i2c:
 
                 elif self._state == 1:
                     # Poll DRDY with bare read (same as blocking version)
-                    if now - self._req_time < 0.005:
-                        return False   # wait at least 5ms before first poll
+                    if now - self._req_time < 0.010:
+                        return False   # wait at least 10ms before first poll
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         if _MLX_STATUS_BUF[0] & 0x01:
@@ -502,13 +469,14 @@ if i2c:
                             _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_RM)
                             self._req_time = now
                             self._state = 2
+                            return False
                     except BaseException as e:
                         self._err_count += 1
                         self._err1 += 1
                         if self._err_count <= 5:
                             send_json({"event":"mlx_tick_err","state":1,
                                        "detail":str(e),"n":self._err_count})
-                    if now - self._req_time > 0.2:
+                    if now - self._req_time > 0.3:
                         self._state = 0
                     return False
 
