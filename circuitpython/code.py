@@ -432,75 +432,35 @@ if i2c:
         _addr_ref = _MLX_ADDR
 
         class _MLXReader:
-            __slots__ = ("x","y","z","_state","_req_time","_poll_time",
+            __slots__ = ("x","y","z","_last_read",
                          "_ok_count","_err_count","_err0","_err1")
             def __init__(self):
                 self.x = self.y = self.z = 0
-                self._state     = 0   # 0=IDLE, 1=WAIT_DRDY, 2=WAIT_READ
-                self._req_time  = 0.0
-                self._poll_time = 0.0 # last DRDY poll — enforce 5ms gap
+                self._last_read = 0.0
                 self._ok_count  = 0
                 self._err_count = 0
                 self._err0 = 0
                 self._err1 = 0
 
             def tick(self, now):
-                if self._state == 0:
-                    try:
-                        _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_SM)
-                        self._req_time  = now
-                        self._poll_time = now   # start poll timer
-                        self._state = 1
-                    except BaseException as e:
-                        self._err_count += 1
-                        self._err0 += 1
-                        if self._err_count <= 5:
-                            send_json({"event":"mlx_tick_err","state":0,
-                                       "detail":str(e),"n":self._err_count})
+                # Rate limit: one read every 20ms (~50 Hz)
+                if now - self._last_read < 0.020:
                     return False
-
-                elif self._state == 1:
-                    # 10ms initial wait, then 5ms between DRDY polls
-                    if now - self._req_time < 0.010:
-                        return False
-                    if now - self._poll_time < 0.005:
-                        return False
-                    self._poll_time = now
-                    try:
-                        _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
-                        if _MLX_STATUS_BUF[0] & 0x01:
-                            _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_RM)
-                            self._req_time = now
-                            self._state = 2
-                            return False
-                    except BaseException as e:
-                        self._err_count += 1
-                        self._err1 += 1
-                        if self._err_count <= 5:
-                            send_json({"event":"mlx_tick_err","state":1,
-                                       "detail":str(e),"n":self._err_count})
-                    if now - self._req_time > 0.3:
-                        self._state = 0
-                    return False
-
-                else:  # state 2
-                    if now - self._req_time < 0.005:
-                        return False
-                    try:
-                        _mlx_read(_i2c_ref, _addr_ref, _MLX_DATA_BUF)
-                        self.x = _s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2])
-                        self.y = _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4])
-                        self.z = _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6])
-                        self._state = 0
-                        self._ok_count += 1
-                        return True
-                    except BaseException as e:
-                        self._err_count += 1
-                        self._err1 += 1
-                        if self._err_count <= 5:
-                            send_json({"event":"mlx_tick_err","state":2,
-                                       "detail":str(e),"n":self._err_count})
-                        self._state = 0
+                self._last_read = now
+                try:
+                    # Complete SM→poll→RM→read in one call (~15ms)
+                    x, y, z = _mlx_read_xyz(_i2c_ref, _addr_ref)
+                    self.x = x
+                    self.y = y
+                    self.z = z
+                    self._ok_count += 1
+                    return True
+                except BaseException as e:
+                    self._err_count += 1
+                    self._err1 += 1
+                    if self._err_count <= 5:
+                        send_json({"event":"mlx_tick_err","state":0,
+                                   "detail":str(e),"n":self._err_count})
                     return False
 
         mlx = _MLXReader()
