@@ -474,7 +474,7 @@ if i2c:
 # ─────────────────────────────────────────────────────────────
 
 class SpaceMouse:
-    __slots__ = ("fx","fy","fz","is_orbiting","is_panning",
+    __slots__ = ("fx","fy","fz","sx","sy","sz","is_orbiting","is_panning",
                  "_above_since","_below_since","_zoom_accum",
                  "_orbit_kc","_pan_kc","_idle_since")
     # Drift correction rate: offsets creep toward current raw reading
@@ -482,9 +482,12 @@ class SpaceMouse:
     _DRIFT_RATE = 0.001
     # Snap-to-zero after this many seconds idle below deadzone
     _SNAP_TIME  = 0.5
+    # Second-stage smoothing alpha — lower = smoother (0.1 = very smooth)
+    _SMOOTH     = 0.15
 
     def __init__(self):
-        self.fx = self.fy = self.fz = 0.0
+        self.fx = self.fy = self.fz = 0.0   # stage 1: adaptive EMA
+        self.sx = self.sy = self.sz = 0.0   # stage 2: output smoothing
         self.is_orbiting = self.is_panning = False
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
@@ -506,6 +509,7 @@ class SpaceMouse:
         _mlx_oy = ys / _cal_n
         _mlx_oz = zs / _cal_n
         self.fx = self.fy = self.fz = 0.0
+        self.sx = self.sy = self.sz = 0.0
         return [_mlx_ox, _mlx_oy, _mlx_oz]
 
     def safety_release(self):
@@ -522,6 +526,7 @@ class SpaceMouse:
             self._pan_kc = []
             self.is_panning = False
         self.fx = self.fy = self.fz = 0.0
+        self.sx = self.sy = self.sz = 0.0
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
         self._idle_since  = None
@@ -531,8 +536,9 @@ class SpaceMouse:
         base  = SC.sm_filter
         adapt = SC.sm_adapt
         dz    = SC.sm_deadzone
+        sm    = self._SMOOTH
 
-        # Adaptive EMA filter
+        # Stage 1: Adaptive EMA — fast response to large movements
         dx = (raw_x - _mlx_ox) - self.fx
         ax = base + abs(dx) * adapt
         if ax > 0.8: ax = 0.8
@@ -548,17 +554,21 @@ class SpaceMouse:
         if az > 0.8: az = 0.8
         self.fz += az * dz_val
 
-        # Drift correction + snap-to-zero when idle
-        all_below = abs(self.fx) < dz and abs(self.fy) < dz and abs(self.fz) < SC.sm_z_threshold
+        # Stage 2: Output smoothing — removes jitter from stage 1
+        self.sx += sm * (self.fx - self.sx)
+        self.sy += sm * (self.fy - self.sy)
+        self.sz += sm * (self.fz - self.sz)
+
+        # Drift correction + snap-to-zero when idle (uses smooth output)
+        all_below = abs(self.sx) < dz and abs(self.sy) < dz and abs(self.sz) < SC.sm_z_threshold
         if all_below and not self.is_orbiting and not self.is_panning:
             if self._idle_since is None:
                 self._idle_since = now
             else:
                 idle_t = now - self._idle_since
                 if idle_t > self._SNAP_TIME:
-                    # Snap filtered output to zero
                     self.fx = self.fy = self.fz = 0.0
-                # Slowly drift offsets toward current raw reading
+                    self.sx = self.sy = self.sz = 0.0
                 _mlx_ox += (raw_x - _mlx_ox) * self._DRIFT_RATE
                 _mlx_oy += (raw_y - _mlx_oy) * self._DRIFT_RATE
                 _mlx_oz += (raw_z - _mlx_oz) * self._DRIFT_RATE
@@ -587,8 +597,8 @@ class SpaceMouse:
         sens  = SC.sm_sensitivity
         enter = SC.sm_orbit_enter
         exit_ = SC.sm_orbit_exit
-        fx    = self.fx
-        fy    = self.fy
+        fx    = self.sx   # use stage-2 smooth output
+        fy    = self.sy
 
         xy_active = abs(fx) > dz or abs(fy) > dz
         inv_s10 = SC.sm_inv_s10
@@ -627,7 +637,7 @@ class SpaceMouse:
             return
 
         z_mode = SC.sm_z_mode
-        fz = self.fz
+        fz = self.sz   # use stage-2 smooth output
         if z_mode == "ZOOM":
             if abs(fz) > zt:
                 self._zoom_accum += fz / (sens * 20)
@@ -1387,9 +1397,9 @@ while True:
             prev_jy = jy
         if mlx and SC.sm_active:   # only send sm_data when space mouse is active
             _stdout_write(
-                '{"event":"sm_data","x":' + str(round(sm.fx, 1)) +
-                ',"y":' + str(round(sm.fy, 1)) +
-                ',"z":' + str(round(sm.fz, 1)) +
+                '{"event":"sm_data","x":' + str(round(sm.sx, 1)) +
+                ',"y":' + str(round(sm.sy, 1)) +
+                ',"z":' + str(round(sm.sz, 1)) +
                 ',"ok":' + str(mlx._ok_count) +
                 ',"err":' + str(mlx._err_count) + '}\n'
             )
