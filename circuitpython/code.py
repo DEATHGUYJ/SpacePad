@@ -419,16 +419,26 @@ if i2c:
         time.sleep(0.003)                          # startup sequence
         send_json({"event": "mlx_reset"})
 
-        # ── Configure registers for fast conversion ───────────
-        # Register 0: HALLCONF=0xC (bits 3:0), keep other bits
-        st, reg0 = _mlx_read_reg(i2c, _MLX_ADDR, 0x00)
-        reg0_new = (reg0 & 0xFFF0) | 0x0C   # HALLCONF = 0xC
-        _mlx_write_reg(i2c, _MLX_ADDR, 0x00, reg0_new)
+        # ── Test read BEFORE register config ──────────────────
+        x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
+        send_json({"event": "mlx_pre_config", "xyz": [x, y, z]})
 
-        # Register 2: OSR=0 (bits 1:0), DIG_FILT=2 (bits 4:2), keep RES_XYZ etc.
+        # ── Configure registers for fast conversion ───────────
+        st, reg0 = _mlx_read_reg(i2c, _MLX_ADDR, 0x00)
+        send_json({"event": "mlx_reg0_read", "val": hex(reg0), "st": hex(st)})
+        reg0_new = (reg0 & 0xFFF0) | 0x0C
+        st = _mlx_write_reg(i2c, _MLX_ADDR, 0x00, reg0_new)
+        send_json({"event": "mlx_reg0_write", "val": hex(reg0_new), "st": hex(st)})
+
         st, reg2 = _mlx_read_reg(i2c, _MLX_ADDR, 0x02)
-        reg2_new = (reg2 & 0xFFE0) | (2 << 2) | 0   # DIG_FILT=2, OSR=0
-        _mlx_write_reg(i2c, _MLX_ADDR, 0x02, reg2_new)
+        send_json({"event": "mlx_reg2_read", "val": hex(reg2), "st": hex(st)})
+        reg2_new = (reg2 & 0xFFE0) | (2 << 2) | 0
+        st = _mlx_write_reg(i2c, _MLX_ADDR, 0x02, reg2_new)
+        send_json({"event": "mlx_reg2_write", "val": hex(reg2_new), "st": hex(st)})
+
+        # Return to idle
+        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
+        time.sleep(0.002)
 
         # Verify
         _, reg0v = _mlx_read_reg(i2c, _MLX_ADDR, 0x00)
@@ -436,14 +446,13 @@ if i2c:
         send_json({"event": "mlx_config",
                    "reg0": hex(reg0v), "reg2": hex(reg2v),
                    "hallconf": reg0v & 0xF,
-                   "osr": reg2v & 0x3, "dig_filt": (reg2v >> 2) & 0x7,
-                   "tconv_ms": 1.84})
+                   "osr": reg2v & 0x3, "dig_filt": (reg2v >> 2) & 0x7})
 
-        # Return to idle after register ops
+        # EX again before test read
         _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
         time.sleep(0.002)
 
-        # ── Test read + calibration ───────────────────────────
+        # ── Test read AFTER register config ───────────────────
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
         send_json({"event": "mlx_found", "address": hex(_MLX_ADDR), "test_xyz": [x, y, z]})
 
