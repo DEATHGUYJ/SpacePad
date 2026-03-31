@@ -713,21 +713,24 @@ class OLEDManager:
             hw.fill(0)
             if now < self._flash_until:
                 hw.text(self._flash_msg, 0, 24, 1)
-            else:
-                lay = _active_layer()
-                name = lay.get("name","?")[:21] if lay else "\u2014"
-                hw.text(name, 0, 0, 1)
-                if lay:
-                    m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
-                    m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
-                    hw.text("E1:" + m1 + "  E2:" + m2, 0, 16, 1)
-                    if lay.get("sm_active"):
-                        hw.text("SpaceMouse: ON", 0, 32, 1)
-                if enc2_zoom_override:
-                    hw.text("ENC2: ZOOM", 0, 48, 1)
+                # Stay dirty so normal content draws when flash expires
+                hw.show()
+                self._last_draw = now
+                return
+            lay = _active_layer()
+            name = lay.get("name","?")[:21] if lay else "\u2014"
+            hw.text(name, 0, 0, 1)
+            if lay:
+                m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
+                m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
+                hw.text("E1:" + m1 + "  E2:" + m2, 0, 16, 1)
+                if lay.get("sm_active"):
+                    hw.text("SpaceMouse: ON", 0, 32, 1)
+            if enc2_zoom_override:
+                hw.text("ENC2: ZOOM", 0, 48, 1)
             hw.show()
         except Exception:
-            pass   # missing font or I2C error — don't crash the firmware
+            pass
         self._dirty     = False
         self._last_draw = now
 
