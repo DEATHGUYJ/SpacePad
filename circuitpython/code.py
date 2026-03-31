@@ -331,14 +331,6 @@ try:
 except Exception as e:
     send_json({"event": "i2c_mlx_error", "detail": str(e)})
 
-# OLED on separate bitbang I2C — doesn't block the MLX bus
-try:
-    import bitbangio
-    i2c_oled = bitbangio.I2C(OLED_SCL, OLED_SDA)
-    send_json({"event": "i2c_oled_ok", "scl": "GP21", "sda": "GP20"})
-except Exception as e:
-    send_json({"event": "i2c_oled_error", "detail": str(e)})
-
 if i2c:
     # Scan MLX bus
     try:
@@ -417,6 +409,26 @@ if i2c:
         # CJMCU-90393, even without reading the status byte.
         # The chip is already in idle state after power-up.
         send_json({"event": "mlx_init"})
+
+        # Step-by-step first contact — find exactly where ENODEV occurs
+        try:
+            send_json({"event": "mlx_diag", "step": "sm_write"})
+            _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_SM)
+            send_json({"event": "mlx_diag", "step": "sm_write_ok"})
+        except Exception as e:
+            send_json({"event": "mlx_diag", "step": "sm_write_fail", "d": str(e)})
+            # Raw write test with bus still locked
+            try:
+                while not i2c.try_lock(): pass
+                found = i2c.scan()
+                send_json({"event": "mlx_diag", "step": "rescan", "found": [hex(x) for x in found]})
+                i2c.writeto(0x0C, bytearray([0x3E]))
+                send_json({"event": "mlx_diag", "step": "raw_ok"})
+                i2c.unlock()
+            except Exception as e2:
+                send_json({"event": "mlx_diag", "step": "raw_fail", "d": str(e2)})
+                try: i2c.unlock()
+                except: pass
 
         # ── Test read BEFORE register config ──────────────────
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
@@ -550,6 +562,14 @@ if i2c:
     except BaseException as e:
         send_json({"event": "mlx_error", "detail": str(e)})
         mlx = None
+
+    # OLED on separate bitbang I2C — initialized AFTER MLX to avoid interference
+    try:
+        import bitbangio
+        i2c_oled = bitbangio.I2C(OLED_SCL, OLED_SDA)
+        send_json({"event": "i2c_oled_ok", "scl": "GP21", "sda": "GP20"})
+    except Exception as e:
+        send_json({"event": "i2c_oled_error", "detail": str(e)})
 
     # SSD1306 OLED — on separate bitbang I2C bus (GP20/GP21)
     if i2c_oled:
