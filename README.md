@@ -2,7 +2,7 @@
 
 **A 20-key macropad (non-standard 5×5 matrix) with an integrated 3D space mouse, dual rotary encoders, analog joystick, and OLED display — powered by a Raspberry Pi Pico and CircuitPython.**
 
-SpacePad is a fully open-source input device designed for creative professionals, CAD users, and anyone who wants deep keyboard/mouse customization. It combines a 20-key matrix, a CJMCU-90393 (MLX90393) magnetometer-based space mouse for 3D orbit/pan/zoom driven by a custom-built I²C driver, two clickable rotary encoders, an analog joystick for mouse control, and a 128×32 OLED status display — all configurable through a single desktop app that doubles as a system tray auto-layer switcher.
+SpacePad is a fully open-source input device designed for creative professionals, CAD users, and anyone who wants deep keyboard/mouse customization. It combines a 20-key matrix, a CJMCU-90393 (MLX90393) magnetometer-based space mouse for 3D orbit/pan/zoom driven by a custom-built I²C driver, two clickable rotary encoders, an analog joystick for mouse control, and a 128×64 OLED status display — all configurable through a single desktop app that doubles as a system tray auto-layer switcher.
 
 > **This project is a fork of [jeevan8232/macrokeyboard](https://github.com/jeevan8232/macrokeyboard)** — the original hardware design, 3D printable files, and keycap STLs are from that project. SpacePad builds on top of it with a fully rewritten firmware, a desktop configurator GUI with integrated tray app, OLED support, and a custom magnetometer driver.
 
@@ -35,8 +35,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 > - Serial protocol (bidirectional JSON, telemetry, passthrough/visualiser mode)
 >
 > ### 🔧 In Progress
-> - Space mouse thermal drift — the MLX90393 baseline shifts as the chip warms up. Auto-zero on GUI connect helps; may need periodic re-zeroing or high-pass drift correction for long sessions
-
+> - Space mouse thermal drift — the MLX90393 baseline shifts as the chip warms up. Mitigated by auto-zero on GUI connect, automatic drift correction during idle, and snap-to-zero after 500ms rest. May still need manual re-zeroing during very long sessions.
 
 ---
 
@@ -71,7 +70,7 @@ Full build and wiring guide: [`spacepad_setup_guide.pdf`](spacepad_setup_guide.p
 - **CJMCU-90393 magnetometer** (MLX90393) acting as a contactless 3D space mouse — orbit, pan, and zoom in CAD software by tilting a magnet above the sensor. Driven by a custom-built non-blocking I²C driver (no external library required). **Important:** solder the CS and PU jumper pads on the back of the CJMCU board to enable I²C mode and pull-ups
 - **Dual rotary encoders** with push-button switches, configurable per-layer for horizontal scroll, vertical scroll, zoom, undo/redo, tab switching, or volume control
 - **Analog joystick** with push-button click for full mouse cursor control with adjustable speed, deadzone, and axis inversion
-- **SSD1306 128×32 OLED** displaying the active layer name, encoder modes, and flash notifications
+- **SSD1306 128×64 OLED** displaying the active layer name, encoder modes, and flash notifications
 - **Two extra buttons** — one for layer cycling, one configurable (default: F6)
 - **Raspberry Pi Pico** running CircuitPython — no compiling, just drag-and-drop firmware
 
@@ -295,7 +294,7 @@ SpacePad/
 | Analog joystick module | 1 | PS2-style dual-axis with click (e.g., KY-023) |
 | CJMCU-90393 magnetometer | 1 | MLX90393-based breakout, I²C address 0x0C, custom driver (no library needed). **Solder the CS and PU jumpers on the back of the board** to enable I²C mode and pull-ups |
 | Neodymium magnet | 1 | Mounted above the CJMCU-90393 on a lever/spring |
-| SSD1306 OLED 128×32 | 1 | I²C address 0x3C, on separate bitbang bus (GP20/GP21) |
+| SSD1306 OLED 128×64 | 1 | I²C address 0x3C, on separate bitbang bus (GP20/GP21) |
 | Tactile buttons | 2 | For extra button 1 (GP18) and layer cycle (GP19) |
 
 For 3D printable parts, see the [`3d files/stl/`](3d%20files/stl/) directory or the [Thingiverse page](https://www.thingiverse.com/thing:7293580).

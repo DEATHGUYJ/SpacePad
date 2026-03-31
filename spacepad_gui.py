@@ -7,6 +7,7 @@ import sys
 import json
 import time
 import copy
+import collections
 
 from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QVBoxLayout, QHBoxLayout,
@@ -753,7 +754,7 @@ class SerialWorker(QThread):
         self.baud      = baud
         self._port     = None
         self._running  = False
-        self._send_queue = []
+        self._send_queue = collections.deque()   # thread-safe append/popleft
 
     def run(self):
         import serial as _serial
@@ -767,7 +768,7 @@ class SerialWorker(QThread):
         while self._running:
             # Send queued messages
             while self._send_queue:
-                msg = self._send_queue.pop(0)
+                msg = self._send_queue.popleft()
                 try:
                     self._port.write((json.dumps(msg) + "\n").encode())
                 except Exception:

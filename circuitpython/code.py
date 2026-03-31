@@ -314,11 +314,8 @@ mlx_ok = oled_ok = False
 # Pre-allocated MLX I²C buffers — avoids bytearray allocation on every read
 _MLX_CMD_SM    = bytearray([0x3E])   # SM: single measurement XYZ (zyxt=0b1110)
 _MLX_CMD_RM    = bytearray([0x4E])   # RM: read measurement XYZ
-_MLX_CMD_EX    = bytearray([0x80])   # EX: exit to idle
-_MLX_CMD_RT    = bytearray([0xF0])   # RT: reset
 _MLX_STATUS_BUF = bytearray(1)       # reused for status reads
 _MLX_DATA_BUF   = bytearray(7)       # reused for RM response (status + 3×16-bit)
-_MLX_REG_BUF    = bytearray(3)       # reused for register reads (status + 16-bit)
 
 def _s16(hi, lo):
     """Signed 16-bit from two bytes — used for MLX XYZ decode."""
@@ -362,27 +359,6 @@ if i2c:
             while not bus.try_lock(): pass
             try:    bus.readfrom_into(addr, buf)
             finally: bus.unlock()
-
-        def _mlx_cmd(bus, addr, cmd_buf):
-            """Send command and read status byte. Every MLX command requires this."""
-            _mlx_write(bus, addr, cmd_buf)
-            time.sleep(0.001)
-            _mlx_read(bus, addr, _MLX_STATUS_BUF)
-            return _MLX_STATUS_BUF[0]
-
-        def _mlx_read_reg(bus, addr, reg):
-            """Read a 16-bit register. Returns (status, value)."""
-            _mlx_write(bus, addr, bytearray([0x50, reg << 2]))
-            time.sleep(0.002)
-            _mlx_read(bus, addr, _MLX_REG_BUF)
-            return _MLX_REG_BUF[0], (_MLX_REG_BUF[1] << 8) | _MLX_REG_BUF[2]
-
-        def _mlx_write_reg(bus, addr, reg, value):
-            """Write a 16-bit register. Returns status."""
-            _mlx_write(bus, addr, bytearray([0x60, (value >> 8) & 0xFF, value & 0xFF, reg << 2]))
-            time.sleep(0.002)
-            _mlx_read(bus, addr, _MLX_STATUS_BUF)
-            return _MLX_STATUS_BUF[0]
 
         def _mlx_read_xyz(bus, addr):
             """Blocking single measurement — matches the pattern that works at boot."""
@@ -485,7 +461,7 @@ if i2c:
     if i2c_oled:
         try:
             import adafruit_ssd1306
-            oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 32, i2c_oled, addr=0x3C)
+            oled_hw = adafruit_ssd1306.SSD1306_I2C(128, 64, i2c_oled, addr=0x3C)
             oled_hw.fill(0)
             oled_hw.show()
             oled_ok = True
@@ -604,6 +580,7 @@ class SpaceMouse:
         return delta if v > 0 else -delta
 
     def _process(self, now):
+        if passthrough_mode: return   # suppress HID in passthrough/visualiser mode
         lay   = _active_layer()
         dz    = SC.sm_deadzone
         zt    = SC.sm_z_threshold
@@ -725,7 +702,7 @@ class OLEDManager:
         try:
             hw.fill(0)
             if now < self._flash_until:
-                hw.text(self._flash_msg, 0, 12, 1)
+                hw.text(self._flash_msg, 0, 24, 1)
             else:
                 lay = _active_layer()
                 name = lay.get("name","?")[:21] if lay else "\u2014"
@@ -733,9 +710,11 @@ class OLEDManager:
                 if lay:
                     m1 = ENC_SHORT.get(lay.get("enc1_mode",""), "?")
                     m2 = ENC_SHORT.get(lay.get("enc2_mode",""), "?")
-                    hw.text("1:" + m1 + " 2:" + m2, 0, 10, 1)
+                    hw.text("E1:" + m1 + "  E2:" + m2, 0, 16, 1)
+                    if lay.get("sm_active"):
+                        hw.text("SpaceMouse: ON", 0, 32, 1)
                 if enc2_zoom_override:
-                    hw.text("ENC2:ZOOM", 0, 22, 1)
+                    hw.text("ENC2: ZOOM", 0, 48, 1)
             hw.show()
         except Exception:
             pass   # missing font or I2C error — don't crash the firmware
@@ -1010,9 +989,9 @@ def handle_encoder(enc_num, delta):
         kbd.release(Keycode.CONTROL)
     elif mode == "UNDO_REDO":
         if delta > 0:
-            for _ in range(delta):  kbd.send(Keycode.GUI, Keycode.Z)
+            for _ in range(delta):  kbd.send(Keycode.CONTROL, Keycode.Z)
         else:
-            for _ in range(-delta): kbd.send(Keycode.GUI, Keycode.SHIFT, Keycode.Z)
+            for _ in range(-delta): kbd.send(Keycode.CONTROL, Keycode.SHIFT, Keycode.Z)
     elif mode == "NEXT_PREV_TAB":
         if delta > 0:
             for _ in range(delta):  kbd.send(Keycode.CONTROL, Keycode.TAB)
@@ -1353,19 +1332,20 @@ while True:
     if p2 != last_pos2:
         d2 = p2 - last_pos2
         if enc2_zoom_override:
-            spd = int(SC.enc2_speed * _enc_factor())
-            if SC.enc2_invert: d2 = -d2
-            kbd.press(Keycode.CONTROL)
-            mouse.move(wheel=d2 * spd)
-            kbd.release(Keycode.CONTROL)
+            if not passthrough_mode:
+                spd = int(SC.enc2_speed * _enc_factor())
+                if SC.enc2_invert: d2 = -d2
+                kbd.press(Keycode.CONTROL)
+                mouse.move(wheel=d2 * spd)
+                kbd.release(Keycode.CONTROL)
         else:
             handle_encoder(2, d2)
         last_pos2 = p2
 
-    # ── MLX space mouse (non-blocking — runs every tick) ────────
-    # Only active when the current layer has sm_active = True.
-    # Starts a measurement and returns immediately; reads result
-    # on a later tick when DRDY is set — main loop never blocks.
+    # ── MLX space mouse (~50 Hz blocking reads) ───────────────
+    # Each read blocks for ~15ms (SM→poll→RM→read). Rate-limited
+    # to 20ms intervals inside tick(). Keys, encoders, and joystick
+    # are processed before this so input latency is unaffected.
     if mlx and SC.sm_active:
         if mlx.tick(now):
             sm.update(mlx.x, mlx.y, mlx.z, now)
