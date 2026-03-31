@@ -381,14 +381,14 @@ if i2c:
         def _mlx_read_reg(bus, addr, reg):
             """Read a 16-bit register. Returns (status, value)."""
             _mlx_write(bus, addr, bytearray([0x50, reg << 2]))
-            time.sleep(0.001)
+            time.sleep(0.002)
             _mlx_read(bus, addr, _MLX_REG_BUF)
             return _MLX_REG_BUF[0], (_MLX_REG_BUF[1] << 8) | _MLX_REG_BUF[2]
 
         def _mlx_write_reg(bus, addr, reg, value):
             """Write a 16-bit register. Returns status."""
             _mlx_write(bus, addr, bytearray([0x60, (value >> 8) & 0xFF, value & 0xFF, reg << 2]))
-            time.sleep(0.001)
+            time.sleep(0.002)
             _mlx_read(bus, addr, _MLX_STATUS_BUF)
             return _MLX_STATUS_BUF[0]
 
@@ -397,9 +397,12 @@ if i2c:
             _mlx_write(bus, addr, _MLX_CMD_SM)       # SM command (no status read)
             time.sleep(0.01)                          # 10ms initial wait
             for _ in range(20):                       # poll DRDY with bare reads
-                _mlx_read(bus, addr, _MLX_STATUS_BUF)
-                if _MLX_STATUS_BUF[0] & 0x01:
-                    break
+                try:
+                    _mlx_read(bus, addr, _MLX_STATUS_BUF)
+                    if _MLX_STATUS_BUF[0] & 0x01:
+                        break
+                except BaseException:
+                    pass                              # chip may NACK during conversion
                 time.sleep(0.005)
             # RM: write command, wait, then read response
             _mlx_write(bus, addr, _MLX_CMD_RM)
