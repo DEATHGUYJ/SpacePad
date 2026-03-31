@@ -547,7 +547,14 @@ class SliderRow(QWidget):
     def _on_change(self):
         self._refresh_label()
         if not self._updating:
-            self.valueChanged.emit(self.get_value())
+            # Debounce: only emit after 150ms of no changes
+            if not hasattr(self, '_debounce'):
+                self._debounce = QTimer()
+                self._debounce.setSingleShot(True)
+                self._debounce.timeout.connect(
+                    lambda: self.valueChanged.emit(self.get_value())
+                )
+            self._debounce.start(150)
 
     def get_value(self):
         raw = self.slider.value()

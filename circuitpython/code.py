@@ -1173,7 +1173,11 @@ def handle_command(raw):
             send_json({"error":"no_mlx"})
 
     elif action == "save":
+        # Drain any pending serial to prevent buffer overflow during flash write
+        if _serial_avail.serial_bytes_available:
+            serial_buf += _stdin_read(_serial_avail.serial_bytes_available)
         ok = save_config(cfg)
+        time.sleep(0.05)   # let USB recover after flash write
         send_json({"event":"saved" if ok else "save_failed"})
         if ok: oled.flash("Saved!")
 
@@ -1280,10 +1284,16 @@ while True:
     # ── Serial ──────────────────────────────────────────────
     if _serial_avail.serial_bytes_available:
         serial_buf += _stdin_read(_serial_avail.serial_bytes_available)
-        while "\n" in serial_buf:
+        # Overflow protection: if buffer gets huge, discard and reset
+        if len(serial_buf) > 4096:
+            serial_buf = ""
+        # Process at most 3 commands per tick to keep main loop responsive
+        _cmd_count = 0
+        while "\n" in serial_buf and _cmd_count < 3:
             line, serial_buf = serial_buf.split("\n", 1)
             line = line.strip()
             if line: handle_command(line)
+            _cmd_count += 1
 
     # ── Tap/hold + key repeat ────────────────────────────────
     poll_tap_hold(now)
