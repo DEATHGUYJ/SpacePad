@@ -21,6 +21,8 @@ SpacePad is a fully open-source input device designed for creative professionals
 > - Dual rotary encoders (per-layer modes, switch actions, speed, invert)
 > - Analog joystick (mouse cursor, deadzone, calibration, invert, click action)
 > - Extra buttons (layer cycle, configurable action, enc2 zoom hold)
+> - **Space mouse (CJMCU-90393)** — blocking I2C reader at ~50 Hz, auto-zero on GUI connect, adaptive EMA filter, configurable orbit/pan combos per-layer
+> - **SSD1306 OLED** — on separate bitbang I2C bus (GP20/GP21), displays layer name, encoder modes, flash notifications
 > - Settings persistence (CRC32 checksum, auto-detect corrupt files)
 > - Desktop GUI configurator (5-tab layout, side panel key editor, layer templates)
 > - System tray auto-layer switching by foreground application
@@ -33,11 +35,9 @@ SpacePad is a fully open-source input device designed for creative professionals
 > - Serial protocol (bidirectional JSON, telemetry, passthrough/visualiser mode)
 >
 > ### 🔧 In Progress
-> - **Space mouse (CJMCU-90393)** — sensor is detected and calibrates at boot, but the non-blocking reader in the main loop is not reliably producing data. Blocking reads work; the issue is I2C timing in the non-blocking state machine. Being actively debugged.
-> - **SSD1306 OLED** — now on a separate bitbang I2C bus (GP20/GP21) to avoid contention with the MLX. Initialises and displays text, but depends on the MLX fix for full stability testing.
+> - Space mouse thermal drift — the MLX90393 baseline shifts as the chip warms up. Auto-zero on GUI connect helps; may need periodic re-zeroing or high-pass drift correction for long sessions
 >
 > ### ❌ Known Issues
-> - MLX90393 non-blocking reader fails with ENODEV after boot despite correct timing — root cause under investigation
 > - Some keys (13, 14, 18, 19, 24) may be non-functional on certain builds — suspected faulty switches
 
 ---

@@ -1227,15 +1227,6 @@ _JOY_INV_SCALE = 1.0 / 500.0
 send_json({"event":"joy_calibrated",
            "cx": _JOY_X_CENTRE, "cy": _JOY_Y_CENTRE})
 
-# ── Ensure MLX is in clean state before main loop ─────────
-if mlx_ok:
-    # Do one final blocking read to leave the chip idle
-    try:
-        x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
-        send_json({"event":"mlx_preloop_ok","xyz":[x,y,z]})
-    except Exception as e:
-        send_json({"event":"mlx_preloop_err","detail":str(e)})
-
 # Fractional accumulators — carry sub-pixel movement between ticks to eliminate stutter
 _joy_accum_x = 0.0
 _joy_accum_y = 0.0

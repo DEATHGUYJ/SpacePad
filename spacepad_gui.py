@@ -2658,8 +2658,8 @@ class InputTab(QWidget):
         # ── Space Mouse section ──
         mv_card, mv_inner = make_card("SPACE MOUSE — MOVEMENT")
         self._sens = SliderRow("Sensitivity",        "sm_sensitivity",  1, 50,  0.5, 15.0)
-        self._sm_dz = SliderRow("XY Deadzone",       "sm_deadzone",     10, 400, 5,   100.0)
-        self._zt   = SliderRow("Z Threshold",        "sm_z_threshold",  10, 400, 5,   100.0)
+        self._sm_dz = SliderRow("XY Deadzone",       "sm_deadzone",     10, 1000, 10,  100.0)
+        self._zt   = SliderRow("Z Threshold",        "sm_z_threshold",  10, 1000, 10,  100.0)
         for s in (self._sens, self._sm_dz, self._zt):
             s.valueChanged.connect(lambda v, k=s.key: self.serial.send({"action":"set","key":k,"value":v}))
             mv_inner.addWidget(s)
@@ -3626,6 +3626,7 @@ class MainWindow(QMainWindow):
             QTimer.singleShot(400, lambda: (
                 self.serial.send({"action":"subscribe"}),
                 self.serial.send({"action":"get_config"}),
+                self.serial.send({"action":"zero"}),
             ))
 
     def _on_connected(self, port):
