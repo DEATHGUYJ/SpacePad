@@ -411,14 +411,17 @@ if i2c:
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
         send_json({"event": "mlx_found", "address": hex(_MLX_ADDR), "test_xyz": [x, y, z]})
 
-        # Calibration — average 20 samples at rest
+        # Calibration — discard first 10 readings (ADC settling), average next 50
+        for _ in range(10):
+            _mlx_read_xyz(i2c, _MLX_ADDR)   # discard
         xs = ys = zs = 0.0
-        for _ in range(20):
+        _cal_n = 50
+        for _ in range(_cal_n):
             x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
             xs += x; ys += y; zs += z
-        _mlx_ox = xs / 20
-        _mlx_oy = ys / 20
-        _mlx_oz = zs / 20
+        _mlx_ox = xs / _cal_n
+        _mlx_oy = ys / _cal_n
+        _mlx_oz = zs / _cal_n
 
         # ── Non-blocking MLX reader ───────────────────────────
         # 3-state machine matching the blocking reader's proven pattern:
@@ -497,26 +500,35 @@ if i2c:
 class SpaceMouse:
     __slots__ = ("fx","fy","fz","is_orbiting","is_panning",
                  "_above_since","_below_since","_zoom_accum",
-                 "_orbit_kc","_pan_kc")
+                 "_orbit_kc","_pan_kc","_idle_since")
+    # Drift correction rate: offsets creep toward current raw reading
+    # when all axes are below deadzone. 0.001 = very slow (~1 LSB/sec).
+    _DRIFT_RATE = 0.001
+    # Snap-to-zero after this many seconds idle below deadzone
+    _SNAP_TIME  = 0.5
+
     def __init__(self):
         self.fx = self.fy = self.fz = 0.0
         self.is_orbiting = self.is_panning = False
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
-        self._orbit_kc = []   # resolved keycodes held during orbit
-        self._pan_kc   = []   # resolved keycodes held during pan
+        self._orbit_kc = []
+        self._pan_kc   = []
+        self._idle_since = None
 
     def recalibrate(self):
         global _mlx_ox, _mlx_oy, _mlx_oz
         if not mlx: return None
+        for _ in range(5):
+            _mlx_read_xyz(_i2c_ref, _addr_ref)   # discard
         xs = ys = zs = 0.0
-        for _ in range(20):
+        _cal_n = 30
+        for _ in range(_cal_n):
             x, y, z = _mlx_read_xyz(_i2c_ref, _addr_ref)
             xs += x; ys += y; zs += z
-            time.sleep(0.01)
-        _mlx_ox = xs / 20
-        _mlx_oy = ys / 20
-        _mlx_oz = zs / 20
+        _mlx_ox = xs / _cal_n
+        _mlx_oy = ys / _cal_n
+        _mlx_oz = zs / _cal_n
         self.fx = self.fy = self.fz = 0.0
         return [_mlx_ox, _mlx_oy, _mlx_oz]
 
@@ -536,28 +548,46 @@ class SpaceMouse:
         self.fx = self.fy = self.fz = 0.0
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
+        self._idle_since  = None
 
     def update(self, raw_x, raw_y, raw_z, now):
-        base  = SC.sm_filter   # minimum alpha — user's "smoothness" setting
-        adapt = SC.sm_adapt    # how aggressively alpha scales with movement
+        global _mlx_ox, _mlx_oy, _mlx_oz
+        base  = SC.sm_filter
+        adapt = SC.sm_adapt
+        dz    = SC.sm_deadzone
 
-        # X axis — adaptive alpha based on deviation from filtered value
+        # Adaptive EMA filter
         dx = (raw_x - _mlx_ox) - self.fx
         ax = base + abs(dx) * adapt
         if ax > 0.8: ax = 0.8
         self.fx += ax * dx
 
-        # Y axis
         dy = (raw_y - _mlx_oy) - self.fy
         ay = base + abs(dy) * adapt
         if ay > 0.8: ay = 0.8
         self.fy += ay * dy
 
-        # Z axis
-        dz = (raw_z - _mlx_oz) - self.fz
-        az = base + abs(dz) * adapt
+        dz_val = (raw_z - _mlx_oz) - self.fz
+        az = base + abs(dz_val) * adapt
         if az > 0.8: az = 0.8
-        self.fz += az * dz
+        self.fz += az * dz_val
+
+        # Drift correction + snap-to-zero when idle
+        all_below = abs(self.fx) < dz and abs(self.fy) < dz and abs(self.fz) < SC.sm_z_threshold
+        if all_below and not self.is_orbiting and not self.is_panning:
+            if self._idle_since is None:
+                self._idle_since = now
+            else:
+                idle_t = now - self._idle_since
+                if idle_t > self._SNAP_TIME:
+                    # Snap filtered output to zero
+                    self.fx = self.fy = self.fz = 0.0
+                # Slowly drift offsets toward current raw reading
+                _mlx_ox += (raw_x - _mlx_ox) * self._DRIFT_RATE
+                _mlx_oy += (raw_y - _mlx_oy) * self._DRIFT_RATE
+                _mlx_oz += (raw_z - _mlx_oz) * self._DRIFT_RATE
+        else:
+            self._idle_since = None
 
         self._process(now)
 
