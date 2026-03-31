@@ -432,12 +432,13 @@ if i2c:
         _addr_ref = _MLX_ADDR
 
         class _MLXReader:
-            __slots__ = ("x","y","z","_state","_req_time",
+            __slots__ = ("x","y","z","_state","_req_time","_poll_time",
                          "_ok_count","_err_count","_err0","_err1")
             def __init__(self):
                 self.x = self.y = self.z = 0
-                self._state    = 0   # 0=IDLE, 1=WAIT_DRDY, 2=WAIT_READ
-                self._req_time = 0.0
+                self._state     = 0   # 0=IDLE, 1=WAIT_DRDY, 2=WAIT_READ
+                self._req_time  = 0.0
+                self._poll_time = 0.0 # last DRDY poll — enforce 5ms gap
                 self._ok_count  = 0
                 self._err_count = 0
                 self._err0 = 0
@@ -445,10 +446,10 @@ if i2c:
 
             def tick(self, now):
                 if self._state == 0:
-                    # Send SM command (write only, no status read)
                     try:
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_SM)
-                        self._req_time = now
+                        self._req_time  = now
+                        self._poll_time = now   # start poll timer
                         self._state = 1
                     except BaseException as e:
                         self._err_count += 1
@@ -459,13 +460,15 @@ if i2c:
                     return False
 
                 elif self._state == 1:
-                    # Poll DRDY with bare read (same as blocking version)
+                    # 10ms initial wait, then 5ms between DRDY polls
                     if now - self._req_time < 0.010:
-                        return False   # wait at least 10ms before first poll
+                        return False
+                    if now - self._poll_time < 0.005:
+                        return False
+                    self._poll_time = now
                     try:
                         _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
                         if _MLX_STATUS_BUF[0] & 0x01:
-                            # DRDY set — send RM command
                             _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_RM)
                             self._req_time = now
                             self._state = 2
@@ -481,7 +484,6 @@ if i2c:
                     return False
 
                 else:  # state 2
-                    # Wait 5ms after RM write, then read data
                     if now - self._req_time < 0.005:
                         return False
                     try:
