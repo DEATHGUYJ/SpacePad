@@ -393,33 +393,27 @@ if i2c:
             return _MLX_STATUS_BUF[0]
 
         def _mlx_read_xyz(bus, addr):
-            """Blocking single measurement — used for calibration and test reads."""
-            # SM command — just write, don't read status (chip is busy converting)
-            _mlx_write(bus, addr, _MLX_CMD_SM)
-            time.sleep(0.005)   # wait for conversion (1.84ms + margin)
-            # RM command — send read request, get status + 6 data bytes
-            for _ in range(10):
-                _mlx_write(bus, addr, _MLX_CMD_RM)
-                time.sleep(0.001)
-                _mlx_read(bus, addr, _MLX_DATA_BUF)
-                if _MLX_DATA_BUF[0] & 0x01:   # DRDY
-                    return (_s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2]),
-                            _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4]),
-                            _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6]))
-                time.sleep(0.003)
-            # Fallback — return whatever we got
+            """Blocking single measurement — matches the pattern that works at boot."""
+            _mlx_write(bus, addr, _MLX_CMD_SM)       # SM command (no status read)
+            time.sleep(0.01)                          # 10ms initial wait
+            for _ in range(20):                       # poll DRDY with bare reads
+                _mlx_read(bus, addr, _MLX_STATUS_BUF)
+                if _MLX_STATUS_BUF[0] & 0x01:
+                    break
+                time.sleep(0.005)
+            # RM: write command, wait, then read response
+            _mlx_write(bus, addr, _MLX_CMD_RM)
+            time.sleep(0.005)
+            _mlx_read(bus, addr, _MLX_DATA_BUF)
             return (_s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2]),
                     _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4]),
                     _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6]))
 
-        # ── Reset chip to known state ─────────────────────────
-        # EX: exit any mode — status read OK here
-        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
-        time.sleep(0.002)
-        # RT: reset — do NOT read status (chip is rebooting, NACKs reads)
-        _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_RT)
-        time.sleep(0.010)   # datasheet says 1.5ms, we give 10ms for safety
-        send_json({"event": "mlx_reset"})
+        # ── No reset needed — chip is fresh from power-on ─────
+        # RT command corrupts the CircuitPython I2C bus on the
+        # CJMCU-90393, even without reading the status byte.
+        # The chip is already in idle state after power-up.
+        send_json({"event": "mlx_init"})
 
         # ── Test read BEFORE register config ──────────────────
         x, y, z = _mlx_read_xyz(i2c, _MLX_ADDR)
@@ -438,8 +432,8 @@ if i2c:
         st = _mlx_write_reg(i2c, _MLX_ADDR, 0x02, reg2_new)
         send_json({"event": "mlx_reg2_write", "val": hex(reg2_new), "st": hex(st)})
 
-        # Return to idle
-        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
+        # Return to idle (bare write — no status read)
+        _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_EX)
         time.sleep(0.002)
 
         # Verify
@@ -450,8 +444,8 @@ if i2c:
                    "hallconf": reg0v & 0xF,
                    "osr": reg2v & 0x3, "dig_filt": (reg2v >> 2) & 0x7})
 
-        # EX again before test read
-        _mlx_cmd(i2c, _MLX_ADDR, _MLX_CMD_EX)
+        # EX again before test read (bare write)
+        _mlx_write(i2c, _MLX_ADDR, _MLX_CMD_EX)
         time.sleep(0.002)
 
         # ── Test read AFTER register config ───────────────────
@@ -468,11 +462,13 @@ if i2c:
         _mlx_oz = zs / 20
 
         # ── Non-blocking MLX reader ───────────────────────────
-        # State 0 (IDLE):    send SM + read status → go to WAITING
-        # State 1 (WAITING): wait 2ms, send RM + read data → go to IDLE
+        # 3-state machine matching the blocking reader's proven pattern:
+        # State 0 (IDLE):      write SM command → WAIT_DRDY
+        # State 1 (WAIT_DRDY): bare read status → if DRDY: write RM → WAIT_READ
+        # State 2 (WAIT_READ): read 7 data bytes → IDLE
         #
-        # With OSR=0, DIG_FILT=2, HALLCONF=0xC: TCONV = 1.84ms
-        # We wait 3ms to be safe, giving ~250 Hz theoretical max.
+        # Each I2C operation is a single write OR read with STOP between.
+        # Effective rate: ~60-80 Hz (5ms + 5ms + overhead per cycle)
         _i2c_ref  = i2c
         _addr_ref = _MLX_ADDR
 
@@ -481,7 +477,7 @@ if i2c:
                          "_ok_count","_err_count","_err0","_err1")
             def __init__(self):
                 self.x = self.y = self.z = 0
-                self._state    = 0
+                self._state    = 0   # 0=IDLE, 1=WAIT_DRDY, 2=WAIT_READ
                 self._req_time = 0.0
                 self._ok_count  = 0
                 self._err_count = 0
@@ -490,8 +486,8 @@ if i2c:
 
             def tick(self, now):
                 if self._state == 0:
+                    # Send SM command (write only, no status read)
                     try:
-                        # Send SM command — don't read status (chip busy converting)
                         _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_SM)
                         self._req_time = now
                         self._state = 1
@@ -502,22 +498,18 @@ if i2c:
                             send_json({"event":"mlx_tick_err","state":0,
                                        "detail":str(e),"n":self._err_count})
                     return False
-                else:
-                    # TCONV = 1.84ms with our register settings; wait 3ms
-                    if now - self._req_time < 0.003:
-                        return False
+
+                elif self._state == 1:
+                    # Poll DRDY with bare read (same as blocking version)
+                    if now - self._req_time < 0.005:
+                        return False   # wait at least 5ms before first poll
                     try:
-                        # Send RM command and read status + 6 data bytes
-                        _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_RM)
-                        _mlx_read(_i2c_ref, _addr_ref, _MLX_DATA_BUF)
-                        if _MLX_DATA_BUF[0] & 0x01:   # DRDY in status byte
-                            self.x = _s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2])
-                            self.y = _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4])
-                            self.z = _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6])
-                            self._state = 0
-                            self._ok_count += 1
-                            return True
-                        # Not ready yet — stay in state 1, retry next tick
+                        _mlx_read(_i2c_ref, _addr_ref, _MLX_STATUS_BUF)
+                        if _MLX_STATUS_BUF[0] & 0x01:
+                            # DRDY set — send RM command
+                            _mlx_write(_i2c_ref, _addr_ref, _MLX_CMD_RM)
+                            self._req_time = now
+                            self._state = 2
                     except BaseException as e:
                         self._err_count += 1
                         self._err1 += 1
@@ -525,7 +517,28 @@ if i2c:
                             send_json({"event":"mlx_tick_err","state":1,
                                        "detail":str(e),"n":self._err_count})
                     if now - self._req_time > 0.2:
-                        self._state = 0   # timeout — reset
+                        self._state = 0
+                    return False
+
+                else:  # state 2
+                    # Wait 5ms after RM write, then read data
+                    if now - self._req_time < 0.005:
+                        return False
+                    try:
+                        _mlx_read(_i2c_ref, _addr_ref, _MLX_DATA_BUF)
+                        self.x = _s16(_MLX_DATA_BUF[1], _MLX_DATA_BUF[2])
+                        self.y = _s16(_MLX_DATA_BUF[3], _MLX_DATA_BUF[4])
+                        self.z = _s16(_MLX_DATA_BUF[5], _MLX_DATA_BUF[6])
+                        self._state = 0
+                        self._ok_count += 1
+                        return True
+                    except BaseException as e:
+                        self._err_count += 1
+                        self._err1 += 1
+                        if self._err_count <= 5:
+                            send_json({"event":"mlx_tick_err","state":2,
+                                       "detail":str(e),"n":self._err_count})
+                        self._state = 0
                     return False
 
         mlx = _MLXReader()
