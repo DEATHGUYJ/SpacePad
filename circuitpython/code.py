@@ -1021,7 +1021,7 @@ telemetry_active  = False
 passthrough_mode  = False  # when True: key events reported but HID suppressed (visualiser)
 
 def handle_command(raw):
-    global telemetry_active, passthrough_mode
+    global telemetry_active, passthrough_mode, serial_buf
     try:
         cmd = json.loads(raw)
     except Exception:

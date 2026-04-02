@@ -21,7 +21,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 > - Dual rotary encoders (per-layer modes, switch actions, speed, invert)
 > - Analog joystick (mouse cursor, deadzone, calibration, invert, click action)
 > - Extra buttons (layer cycle, configurable action, enc2 zoom hold)
-> - **Space mouse (CJMCU-90393)** — blocking I2C reader at ~50 Hz, auto-zero on GUI connect, adaptive EMA filter, configurable orbit/pan combos per-layer
+> - **Space mouse (CJMCU-90393)** — blocking I2C reader at ~50 Hz, Kalman filter (from diy-spacemouse), auto-zero on GUI connect, drift correction, configurable orbit/pan combos per-layer
 > - **SSD1306 OLED** — on separate bitbang I2C bus (GP20/GP21), displays layer name, encoder modes, flash notifications
 > - Settings persistence (CRC32 checksum, auto-detect corrupt files)
 > - Desktop GUI configurator (5-tab layout, side panel key editor, layer templates)
@@ -31,7 +31,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 > - Configurable orbit/pan key combos per-layer (Fusion 360, Onshape, Blender, etc.)
 > - Layer templates with pre-populated shortcuts for 6 CAD apps
 > - Copy existing layer when creating new layers
-> - Adaptive EMA filter for space mouse smoothing
+> - Kalman filter for space mouse smoothing (ported from diy-spacemouse SimpleKalmanFilter)
 > - Serial protocol (bidirectional JSON, telemetry, passthrough/visualiser mode)
 >
 > ### 🔧 In Progress
