@@ -473,21 +473,38 @@ if i2c:
 #  7. SPACE MOUSE
 # ─────────────────────────────────────────────────────────────
 
+class _KalmanAxis:
+    """Lightweight 1D Kalman filter — matches SimpleKalmanFilter from diy-spacemouse."""
+    __slots__ = ("_e_mea","_q","_e_est","_est")
+    def __init__(self, e_mea=1.0, e_est=1.0, q=0.2):
+        self._e_mea = e_mea   # measurement uncertainty
+        self._q     = q       # process noise (higher = faster tracking)
+        self._e_est = e_est   # estimation uncertainty (adapts over time)
+        self._est   = 0.0     # current estimate
+
+    def update(self, measurement):
+        kg = self._e_est / (self._e_est + self._e_mea)  # Kalman gain
+        prev = self._est
+        self._est += kg * (measurement - self._est)
+        self._e_est = (1.0 - kg) * self._e_est + abs(prev - self._est) * self._q
+        return self._est
+
+    def reset(self):
+        self._est = 0.0
+        self._e_est = 1.0
+
 class SpaceMouse:
-    __slots__ = ("fx","fy","fz","sx","sy","sz","is_orbiting","is_panning",
+    __slots__ = ("kx","ky","kz","is_orbiting","is_panning",
                  "_above_since","_below_since","_zoom_accum",
                  "_orbit_kc","_pan_kc","_idle_since")
-    # Drift correction rate: offsets creep toward current raw reading
-    # when all axes are below deadzone. 0.001 = very slow (~1 LSB/sec).
     _DRIFT_RATE = 0.001
-    # Snap-to-zero after this many seconds idle below deadzone
     _SNAP_TIME  = 0.5
-    # Second-stage smoothing alpha — lower = smoother (0.1 = very smooth)
-    _SMOOTH     = 0.15
 
     def __init__(self):
-        self.fx = self.fy = self.fz = 0.0   # stage 1: adaptive EMA
-        self.sx = self.sy = self.sz = 0.0   # stage 2: output smoothing
+        # Kalman filters per axis (e_mea=1, e_est=1, q=0.2 matches diy-spacemouse)
+        self.kx = _KalmanAxis(1.0, 1.0, 0.2)
+        self.ky = _KalmanAxis(1.0, 1.0, 0.2)
+        self.kz = _KalmanAxis(1.0, 1.0, 0.2)
         self.is_orbiting = self.is_panning = False
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
@@ -508,8 +525,7 @@ class SpaceMouse:
         _mlx_ox = xs / _cal_n
         _mlx_oy = ys / _cal_n
         _mlx_oz = zs / _cal_n
-        self.fx = self.fy = self.fz = 0.0
-        self.sx = self.sy = self.sz = 0.0
+        self.kx.reset(); self.ky.reset(); self.kz.reset()
         return [_mlx_ox, _mlx_oy, _mlx_oz]
 
     def safety_release(self):
@@ -525,50 +541,29 @@ class SpaceMouse:
                 kbd.release(kc)
             self._pan_kc = []
             self.is_panning = False
-        self.fx = self.fy = self.fz = 0.0
-        self.sx = self.sy = self.sz = 0.0
+        self.kx.reset(); self.ky.reset(); self.kz.reset()
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
         self._idle_since  = None
 
     def update(self, raw_x, raw_y, raw_z, now):
         global _mlx_ox, _mlx_oy, _mlx_oz
-        base  = SC.sm_filter
-        adapt = SC.sm_adapt
-        dz    = SC.sm_deadzone
-        sm    = self._SMOOTH
+        dz = SC.sm_deadzone
 
-        # Stage 1: Adaptive EMA — fast response to large movements
-        dx = (raw_x - _mlx_ox) - self.fx
-        ax = base + abs(dx) * adapt
-        if ax > 0.8: ax = 0.8
-        self.fx += ax * dx
+        # Kalman filter each axis (offset-corrected input)
+        fx = self.kx.update(raw_x - _mlx_ox)
+        fy = self.ky.update(raw_y - _mlx_oy)
+        fz = self.kz.update(raw_z - _mlx_oz)
 
-        dy = (raw_y - _mlx_oy) - self.fy
-        ay = base + abs(dy) * adapt
-        if ay > 0.8: ay = 0.8
-        self.fy += ay * dy
-
-        dz_val = (raw_z - _mlx_oz) - self.fz
-        az = base + abs(dz_val) * adapt
-        if az > 0.8: az = 0.8
-        self.fz += az * dz_val
-
-        # Stage 2: Output smoothing — removes jitter from stage 1
-        self.sx += sm * (self.fx - self.sx)
-        self.sy += sm * (self.fy - self.sy)
-        self.sz += sm * (self.fz - self.sz)
-
-        # Drift correction + snap-to-zero when idle (uses smooth output)
-        all_below = abs(self.sx) < dz and abs(self.sy) < dz and abs(self.sz) < SC.sm_z_threshold
+        # Drift correction + snap-to-zero when idle
+        all_below = abs(fx) < dz and abs(fy) < dz and abs(fz) < SC.sm_z_threshold
         if all_below and not self.is_orbiting and not self.is_panning:
             if self._idle_since is None:
                 self._idle_since = now
             else:
                 idle_t = now - self._idle_since
                 if idle_t > self._SNAP_TIME:
-                    self.fx = self.fy = self.fz = 0.0
-                    self.sx = self.sy = self.sz = 0.0
+                    self.kx.reset(); self.ky.reset(); self.kz.reset()
                 _mlx_ox += (raw_x - _mlx_ox) * self._DRIFT_RATE
                 _mlx_oy += (raw_y - _mlx_oy) * self._DRIFT_RATE
                 _mlx_oz += (raw_z - _mlx_oz) * self._DRIFT_RATE
@@ -590,15 +585,15 @@ class SpaceMouse:
         return delta if v > 0 else -delta
 
     def _process(self, now):
-        if passthrough_mode: return   # suppress HID in passthrough/visualiser mode
+        if passthrough_mode: return
         lay   = _active_layer()
         dz    = SC.sm_deadzone
         zt    = SC.sm_z_threshold
         sens  = SC.sm_sensitivity
         enter = SC.sm_orbit_enter
         exit_ = SC.sm_orbit_exit
-        fx    = self.sx   # use stage-2 smooth output
-        fy    = self.sy
+        fx    = self.kx._est   # Kalman estimate
+        fy    = self.ky._est
 
         xy_active = abs(fx) > dz or abs(fy) > dz
         inv_s10 = SC.sm_inv_s10
@@ -637,7 +632,7 @@ class SpaceMouse:
             return
 
         z_mode = SC.sm_z_mode
-        fz = self.sz   # use stage-2 smooth output
+        fz = self.kz._est   # Kalman estimate
         if z_mode == "ZOOM":
             if abs(fz) > zt:
                 self._zoom_accum += fz / (sens * 20)
@@ -1410,9 +1405,9 @@ while True:
             prev_jy = jy
         if mlx and SC.sm_active:   # only send sm_data when space mouse is active
             _stdout_write(
-                '{"event":"sm_data","x":' + str(round(sm.sx, 1)) +
-                ',"y":' + str(round(sm.sy, 1)) +
-                ',"z":' + str(round(sm.sz, 1)) +
+                '{"event":"sm_data","x":' + str(round(sm.kx._est, 1)) +
+                ',"y":' + str(round(sm.ky._est, 1)) +
+                ',"z":' + str(round(sm.kz._est, 1)) +
                 ',"ok":' + str(mlx._ok_count) +
                 ',"err":' + str(mlx._err_count) + '}\n'
             )
