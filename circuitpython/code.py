@@ -135,8 +135,7 @@ DEFAULT_CONFIG = {
     "sm_sensitivity":     15.0,
     "sm_deadzone":        100.0,
     "sm_z_threshold":     100.0,
-    "sm_filter":          0.25,
-    "sm_adapt":           0.003,
+    "sm_kalman_q":        0.2,
     "sm_accel":           True,
     "sm_accel_curve":     2.0,
     "sm_z_mode":          "ZOOM",
@@ -169,8 +168,8 @@ DEFAULT_CONFIG = {
 class _C:
     """Flat cache of all settings accessed in the hot path."""
     __slots__ = (
-        "sm_sensitivity","sm_deadzone","sm_z_threshold","sm_filter",
-        "sm_adapt","sm_accel","sm_accel_curve","sm_z_mode","sm_inv_s10",
+        "sm_sensitivity","sm_deadzone","sm_z_threshold","sm_kalman_q",
+        "sm_accel","sm_accel_curve","sm_z_mode","sm_inv_s10",
         "sm_orbit_enter","sm_orbit_exit","sm_active",
         "joy_deadzone","joy_speed","joy_invert_x","joy_invert_y",
         "enc1_speed","enc1_invert","enc2_speed","enc2_invert",
@@ -184,8 +183,7 @@ def _sync_cache():
     SC.sm_sensitivity    = cfg["sm_sensitivity"]
     SC.sm_deadzone       = cfg["sm_deadzone"]
     SC.sm_z_threshold    = cfg["sm_z_threshold"]
-    SC.sm_filter         = max(0.01, min(1.0, cfg["sm_filter"]))
-    SC.sm_adapt          = max(0.0, min(0.02, cfg.get("sm_adapt", 0.003)))
+    SC.sm_kalman_q       = max(0.001, min(1.0, cfg.get("sm_kalman_q", 0.2)))
     SC.sm_accel          = cfg["sm_accel"]
     SC.sm_accel_curve    = max(1.0, cfg["sm_accel_curve"])
     SC.sm_z_mode         = cfg["sm_z_mode"]
@@ -549,6 +547,10 @@ class SpaceMouse:
     def update(self, raw_x, raw_y, raw_z, now):
         global _mlx_ox, _mlx_oy, _mlx_oz
         dz = SC.sm_deadzone
+
+        # Sync Kalman process noise from config (user-adjustable via GUI)
+        q = SC.sm_kalman_q
+        self.kx._q = q; self.ky._q = q; self.kz._q = q
 
         # Kalman filter each axis (offset-corrected input)
         fx = self.kx.update(raw_x - _mlx_ox)

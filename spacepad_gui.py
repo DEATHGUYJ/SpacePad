@@ -2675,28 +2675,22 @@ class InputTab(QWidget):
 
         # Filter & accel
         fa_card, fa_inner = make_card("SPACE MOUSE — FILTER & ACCELERATION")
-        self._filt  = SliderRow("Filter (lower = smoother)", "sm_filter",       0.01, 1.0, 0.01, 0.25)
-        self._adapt = SliderRow("Adaptive rate (0 = off)",   "sm_adapt",        0.0,  0.02, 0.001, 0.003)
+        self._kalman_q = SliderRow("Smoothing (lower = smoother)", "sm_kalman_q", 0.01, 1.0, 0.01, 0.2)
         self._curve = SliderRow("Accel curve (1 = linear)",  "sm_accel_curve",  1.0,  4.0, 0.1,  2.0)
-        self._filt.valueChanged.connect(
-            lambda v: self.serial.send({"action":"set","key":"sm_filter","value":v})
-        )
-        self._adapt.valueChanged.connect(
-            lambda v: self.serial.send({"action":"set","key":"sm_adapt","value":v})
+        self._kalman_q.valueChanged.connect(
+            lambda v: self.serial.send({"action":"set","key":"sm_kalman_q","value":v})
         )
         self._curve.valueChanged.connect(
             lambda v: self.serial.send({"action":"set","key":"sm_accel_curve","value":v})
         )
-        fa_inner.addWidget(self._filt)
-        fa_inner.addWidget(self._adapt)
-        adapt_note = QLabel(
-            "Adaptive filter: when still, uses Filter value (smooth). "
-            "When moving, alpha increases automatically (responsive). "
-            "Set to 0 for fixed filter."
+        fa_inner.addWidget(self._kalman_q)
+        kalman_note = QLabel(
+            "Kalman filter process noise (q). Lower = smoother but slower response. "
+            "Higher = faster tracking but more jitter. Default: 0.20"
         )
-        adapt_note.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 10px;")
-        adapt_note.setWordWrap(True)
-        fa_inner.addWidget(adapt_note)
+        kalman_note.setStyleSheet(f"color: {T.TEXT_DIM}; font-size: 10px;")
+        kalman_note.setWordWrap(True)
+        fa_inner.addWidget(kalman_note)
         fa_inner.addWidget(self._curve)
         fa_inner.addWidget(hsep())
         accel_row = QHBoxLayout()
@@ -2794,9 +2788,9 @@ class InputTab(QWidget):
         """Reset all space mouse settings to factory defaults."""
         defaults = {
             "sm_sensitivity": 15.0,  "sm_deadzone": 100.0,
-            "sm_z_threshold": 100.0, "sm_filter": 0.25,
-            "sm_adapt": 0.003,       "sm_accel": True,
-            "sm_accel_curve": 2.0,   "sm_z_mode": "ZOOM",
+            "sm_z_threshold": 100.0, "sm_kalman_q": 0.2,
+            "sm_accel": True,        "sm_accel_curve": 2.0,
+            "sm_z_mode": "ZOOM",
             "sm_orbit_enter_ms": 40, "sm_orbit_exit_ms": 80,
         }
         for k, v in defaults.items():
@@ -2816,8 +2810,7 @@ class InputTab(QWidget):
         # Space mouse
         sm_mapping = {
             "sm_sensitivity": self._sens, "sm_deadzone": self._sm_dz,
-            "sm_z_threshold": self._zt,   "sm_filter":   self._filt,
-            "sm_adapt": self._adapt,
+            "sm_z_threshold": self._zt,   "sm_kalman_q": self._kalman_q,
             "sm_accel_curve": self._curve, "sm_orbit_enter_ms": self._enter,
             "sm_orbit_exit_ms": self._exit,
         }
