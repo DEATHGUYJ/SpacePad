@@ -995,6 +995,26 @@ class AppWatcher(QThread):
 #  6. VALIDATE CONFIG
 # ─────────────────────────────────────────────────────────────
 
+_VALID_NUMERIC_CFG = {
+    "sm_sensitivity":      (float, 0.1,  100.0),
+    "sm_deadzone":         (float, 0.0,  10000.0),
+    "sm_z_threshold":      (float, 0.0,  10000.0),
+    "sm_kalman_q":         (float, 0.001, 1.0),
+    "sm_accel_curve":      (float, 1.0,  10.0),
+    "sm_orbit_enter_ms":   (int,   0,    10000),
+    "sm_orbit_exit_ms":    (int,   0,    10000),
+    "joy_deadzone":        (int,   0,    65535),
+    "joy_speed":           (float, 0.0,  100.0),
+    "enc1_speed":          (int,   0,    200),
+    "enc2_speed":          (int,   0,    200),
+    "tap_hold_ms":         (int,   50,   5000),
+    "key_repeat_delay_ms": (int,   0,    10000),
+    "key_repeat_rate_ms":  (int,   10,   5000),
+    "default_layer":       (int,   0,    255),
+}
+_MACRO_STEP_DELAY_MAX = 10000   # ms — matches firmware cap
+
+
 def validate_config(data):
     if not isinstance(data, dict):
         return False, "Root must be a JSON object"
@@ -1007,6 +1027,29 @@ def validate_config(data):
         keys = layer.get("keys")
         if not isinstance(keys, list) or len(keys) != 25:
             return False, f"Layer {i} 'keys' must be a list of 25 entries"
+        for j, key in enumerate(keys):
+            if not isinstance(key, dict):
+                return False, f"Layer {i}, key {j} is not an object"
+            macro = key.get("macro")
+            if macro is not None:
+                if not isinstance(macro, list):
+                    return False, f"Layer {i}, key {j}: macro must be a list"
+                for s, step in enumerate(macro):
+                    if not isinstance(step, dict):
+                        return False, f"Layer {i}, key {j}, macro step {s} is not an object"
+                    delay = step.get("delay_ms", 0)
+                    if not isinstance(delay, (int, float)) or delay < 0 or delay > _MACRO_STEP_DELAY_MAX:
+                        return False, (
+                            f"Layer {i}, key {j}, macro step {s}: "
+                            f"delay_ms must be 0–{_MACRO_STEP_DELAY_MAX}"
+                        )
+    for key, (typ, lo, hi) in _VALID_NUMERIC_CFG.items():
+        if key in data:
+            v = data[key]
+            if not isinstance(v, (int, float)):
+                return False, f"'{key}' must be a number, got {type(v).__name__}"
+            if not (lo <= v <= hi):
+                return False, f"'{key}' must be in range [{lo}, {hi}], got {v}"
     return True, ""
 
 

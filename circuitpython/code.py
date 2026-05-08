@@ -772,11 +772,15 @@ def execute_action(name):
     elif name in KC:
         kbd.send(KC[name])
 
+_MACRO_DELAY_MAX = 10000   # ms — prevents imported profiles from freezing the device
+
 def play_macro(steps):
     for step in steps:
         send_combo(step.get("combo", []))
         d = step.get("delay_ms", 0)
-        if d > 0: time.sleep(d / 1000)
+        if d > 0:
+            if d > _MACRO_DELAY_MAX: d = _MACRO_DELAY_MAX
+            time.sleep(d / 1000)
 
 # ─────────────────────────────────────────────────────────────
 #  10. LAYER MANAGEMENT  (base + MO stack)
@@ -1054,8 +1058,14 @@ def handle_command(raw):
     elif action == "set":
         k, v = cmd.get("key"), cmd.get("value")
         if k and k in cfg and k not in ("layers","active_layer"):
+            old_v = cfg[k]
             cfg[k] = v
-            _sync_cache()
+            try:
+                _sync_cache()
+            except Exception:
+                cfg[k] = old_v   # roll back to last good value
+                send_json({"error":"invalid_value","key":k})
+                return
             send_json({"event":"ack","key":k,"value":v})
             oled.mark_dirty()
         else:
@@ -1064,10 +1074,19 @@ def handle_command(raw):
     elif action == "set_layers":
         layers = cmd.get("layers")
         if isinstance(layers, list) and len(layers) >= 1:
-            cfg["layers"] = layers
-            cfg["active_layer"] = min(cfg["active_layer"], len(layers)-1)
-            send_json({"event":"ack_layers","count":len(layers)})
-            oled.mark_dirty()
+            valid = all(
+                isinstance(lay, dict) and
+                isinstance(lay.get("keys"), list) and
+                len(lay["keys"]) == 25
+                for lay in layers
+            )
+            if not valid:
+                send_json({"error":"invalid_layer_structure"})
+            else:
+                cfg["layers"] = layers
+                cfg["active_layer"] = min(cfg["active_layer"], len(layers)-1)
+                send_json({"event":"ack_layers","count":len(layers)})
+                oled.mark_dirty()
         else:
             send_json({"error":"invalid_layers"})
 
@@ -1130,7 +1149,11 @@ def handle_command(raw):
         key  = cmd.get("key")
         val  = cmd.get("value")
         layers = cfg["layers"]
-        if key and 0 <= li < len(layers):
+        _LAYER_PROPS = frozenset((
+            "name","sm_active","sm_orbit_mods","sm_pan_mods",
+            "enc1_mode","enc2_mode","enc1_sw","enc2_sw",
+        ))
+        if key and key in _LAYER_PROPS and 0 <= li < len(layers):
             layers[li][key] = val
             # Refresh sm_active cache if current layer changed
             if key == "sm_active" and li == _active_layer_idx():
