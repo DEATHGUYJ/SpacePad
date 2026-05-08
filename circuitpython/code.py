@@ -500,7 +500,7 @@ class _KalmanAxis:
 class SpaceMouse:
     __slots__ = ("kx","ky","kz","is_orbiting","is_panning",
                  "_above_since","_below_since","_zoom_accum",
-                 "_orbit_kc","_pan_kc","_idle_since")
+                 "_orbit_kc","_pan_kc","_idle_since","_pan_accum")
     _DRIFT_RATE = 0.001
     _SNAP_TIME  = 0.5
 
@@ -512,6 +512,7 @@ class SpaceMouse:
         self.is_orbiting = self.is_panning = False
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
+        self._pan_accum   = 0.0
         self._orbit_kc = []
         self._pan_kc   = []
         self._idle_since = None
@@ -519,10 +520,10 @@ class SpaceMouse:
     def recalibrate(self):
         global _mlx_ox, _mlx_oy, _mlx_oz
         if not mlx: return None
-        for _ in range(5):
+        for _ in range(3):
             _mlx_read_xyz(_i2c_ref, _addr_ref)   # discard
         xs = ys = zs = 0.0
-        _cal_n = 30
+        _cal_n = 15
         for _ in range(_cal_n):
             x, y, z = _mlx_read_xyz(_i2c_ref, _addr_ref)
             xs += x; ys += y; zs += z
@@ -548,6 +549,7 @@ class SpaceMouse:
         self.kx.reset(); self.ky.reset(); self.kz.reset()
         self._above_since = self._below_since = None
         self._zoom_accum  = 0.0
+        self._pan_accum   = 0.0
         self._idle_since  = None
 
     def update(self, raw_x, raw_y, raw_z, now):
@@ -645,7 +647,7 @@ class SpaceMouse:
                     mouse.move(wheel=ticks)
                     self._zoom_accum -= ticks
             else:
-                self._zoom_accum *= 0.8
+                self._zoom_accum = 0.0   # zero immediately — decay caused ghost scrolls
         elif z_mode == "PAN":
             if abs(fz) > zt:
                 if not self.is_panning:
@@ -656,11 +658,17 @@ class SpaceMouse:
                         kbd.press(kc)
                     mouse.press(Mouse.MIDDLE_BUTTON)
                     self.is_panning = True
-                delta = int(fz / sens) * -1
-                if delta > 127: delta = 127
-                elif delta < -127: delta = -127
-                mouse.move(y=delta)
+                # Subtract threshold before scaling (no step-jump at deadzone edge).
+                # Fractional accumulator carries sub-pixel movement between ticks.
+                self._pan_accum += (abs(fz) - zt) / sens * (-1.0 if fz > 0 else 1.0)
+                py = int(self._pan_accum)
+                if py:
+                    if py > 127: py = 127
+                    elif py < -127: py = -127
+                    mouse.move(y=py)
+                    self._pan_accum -= py
             else:
+                self._pan_accum = 0.0
                 if self.is_panning:
                     mouse.release(Mouse.MIDDLE_BUTTON)
                     for kc in self._pan_kc:
