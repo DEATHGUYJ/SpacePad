@@ -13,17 +13,17 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QVBoxLayout, QHBoxLayout,
     QGridLayout, QStackedWidget, QTabWidget, QScrollArea, QFrame, QSplitter,
     QLabel, QPushButton, QSlider, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QRadioButton, QButtonGroup, QCheckBox, QListWidget, QListWidgetItem,
-    QTextEdit, QSizePolicy, QFileDialog, QMessageBox, QInputDialog,
-    QStatusBar, QToolButton, QSystemTrayIcon, QMenu,
+    QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
+    QFileDialog, QMessageBox, QInputDialog,
+    QSystemTrayIcon, QMenu,
 )
 from PySide6.QtCore import (
-    Qt, QThread, Signal, Slot, QTimer, QSize, QPointF, QRectF, QObject,
+    Qt, QThread, Signal, Slot, QTimer, QObject,
     QSettings,
 )
 from PySide6.QtGui import (
-    QPainter, QPen, QBrush, QColor, QFont, QPalette, QPixmap, QIcon,
-    QLinearGradient, QPainterPath, QFontDatabase, QAction, QImage,
+    QPainter, QPen, QColor, QPixmap, QIcon,
+    QAction, QImage,
     QShortcut, QKeySequence,
 )
 
@@ -1983,7 +1983,7 @@ class MatrixTab(QWidget):
         type_radios = {}
         for val, label in types:
             rb = QRadioButton(label)
-            rb.setStyleSheet(f"font-size: 11px;")
+            rb.setStyleSheet("font-size: 11px;")
             type_group.addButton(rb)
             type_radios[val] = rb
             type_row.addWidget(rb)
@@ -2491,7 +2491,6 @@ class LayersTab(QWidget):
         if idx < 0 or idx >= len(layers):
             return
         layer = layers[idx]
-        mode_vals = list(ENCODER_MODES.keys())
         for enc in (1, 2):
             mode = layer.get(f"enc{enc}_mode", "V_SCROLL")
             cb = getattr(self, f"_enc{enc}_mode_cb")
