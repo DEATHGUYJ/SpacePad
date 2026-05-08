@@ -28,12 +28,15 @@ for %%D in (
     "%LOCALAPPDATA%\python\pythoncore-3.14-64"
     "%LOCALAPPDATA%\python\pythoncore-3.13-64"
     "%LOCALAPPDATA%\python\pythoncore-3.12-64"
+    "%LOCALAPPDATA%\python\pythoncore-3.11-64"
     "%LOCALAPPDATA%\Programs\Python\Python314"
     "%LOCALAPPDATA%\Programs\Python\Python313"
     "%LOCALAPPDATA%\Programs\Python\Python312"
+    "%LOCALAPPDATA%\Programs\Python\Python311"
     "%ProgramFiles%\Python314"
     "%ProgramFiles%\Python313"
     "%ProgramFiles%\Python312"
+    "%ProgramFiles%\Python311"
 ) do (
     if exist "%%~D\python.exe" (
         set "PYTHON=%%~D\python.exe"

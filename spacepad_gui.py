@@ -3666,11 +3666,6 @@ class MainWindow(QMainWindow):
                 return
             self._settings.setValue("last_port", port)
             self.serial.connect_port(port)
-            QTimer.singleShot(400, lambda: (
-                self.serial.send({"action":"subscribe"}),
-                self.serial.send({"action":"get_config"}),
-                self.serial.send({"action":"zero"}),
-            ))
 
     def _on_connected(self, port):
         self._status_dot.setStyleSheet(f"color: {T.GREEN}; font-size: 16px; border: none;")
@@ -3683,6 +3678,13 @@ class MainWindow(QMainWindow):
         self._tray.setIcon(self._make_tray_icon(connected=True))
         self._tray.setToolTip(f"SpacePad — Connected ({port})")
         self._log(f"Connected to {port}")
+        # Subscribe, fetch config, and zero the space mouse — needed on every
+        # connection including auto-reconnect after USB unplug/replug.
+        QTimer.singleShot(400, lambda: (
+            self.serial.send({"action": "subscribe"}),
+            self.serial.send({"action": "get_config"}),
+            self.serial.send({"action": "zero"}),
+        ))
 
     def _on_disconnected(self):
         if self._tab_vis._passthrough:
