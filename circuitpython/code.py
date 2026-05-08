@@ -203,6 +203,12 @@ def _sync_cache():
     SC.key_repeat_enabled= cfg["key_repeat_enabled"]
     SC.key_repeat_delay_s= cfg["key_repeat_delay_ms"] * 0.001
     SC.key_repeat_rate_s = cfg["key_repeat_rate_ms"] * 0.001
+    # Sync Kalman q to filter instances so update() skips the lookup every tick
+    _q = SC.sm_kalman_q
+    try:
+        sm.kx._q = sm.ky._q = sm.kz._q = _q
+    except NameError:
+        pass   # sm not yet constructed at first boot call; __init__ sets _q directly
 
 # ─────────────────────────────────────────────────────────────
 #  4. PERSISTENCE  (CRC32 checksum, single file)
@@ -321,7 +327,7 @@ def _s16(hi, lo):
     return v - 65536 if v >= 32768 else v
 
 try:
-    i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=100_000)
+    i2c = busio.I2C(I2C_SCL, I2C_SDA, frequency=400_000)
     send_json({"event": "i2c_mlx_ok", "scl": "GP17", "sda": "GP16"})
 except Exception as e:
     send_json({"event": "i2c_mlx_error", "detail": str(e)})
@@ -548,10 +554,6 @@ class SpaceMouse:
         global _mlx_ox, _mlx_oy, _mlx_oz
         dz = SC.sm_deadzone
 
-        # Sync Kalman process noise from config (user-adjustable via GUI)
-        q = SC.sm_kalman_q
-        self.kx._q = q; self.ky._q = q; self.kz._q = q
-
         # Kalman filter each axis (offset-corrected input)
         fx = self.kx.update(raw_x - _mlx_ox)
         fy = self.ky.update(raw_y - _mlx_oy)
@@ -582,9 +584,7 @@ class SpaceMouse:
         if norm > 1.0: norm = 1.0
         if SC.sm_accel:
             norm = norm ** SC.sm_accel_curve
-        delta = int(norm * 127)
-        if delta > 127: delta = 127
-        return delta if v > 0 else -delta
+        return int(norm * 127) if v > 0 else -int(norm * 127)
 
     def _process(self, now):
         if passthrough_mode: return
@@ -786,7 +786,14 @@ def play_macro(steps):
 #  10. LAYER MANAGEMENT  (base + MO stack)
 # ─────────────────────────────────────────────────────────────
 
-_mo_stack = []
+_mo_stack  = []
+_cur_layer = None   # cached reference to active layer dict; refreshed by _broadcast_layer
+
+# Allowlist for set_layer_prop — at module level to avoid per-call frozenset creation
+_LAYER_PROPS = frozenset((
+    "name","sm_active","sm_orbit_mods","sm_pan_mods",
+    "enc1_mode","enc2_mode","enc1_sw","enc2_sw",
+))
 
 # Pre-built strings — avoids runtime string construction on every event
 _ENC_SW_KEYS = ("enc1_sw", "enc2_sw")   # indexed by ese.key_number (0 or 1)
@@ -800,22 +807,28 @@ def _active_layer_idx():
     layers = cfg["layers"]
     n = len(layers)
     if not n: return 0
-    for i in range(len(_mo_stack) - 1, -1, -1):
-        v = _mo_stack[i]
-        if 0 <= v < n:
-            return v
+    if _mo_stack:
+        for i in range(len(_mo_stack) - 1, -1, -1):
+            v = _mo_stack[i]
+            if 0 <= v < n:
+                return v
     al = cfg["active_layer"]
     return al if al < n else n - 1
 
 def _active_layer():
+    return _cur_layer
+
+def _refresh_cur_layer():
+    global _cur_layer
     layers = cfg["layers"]
-    if not layers: return None
-    return layers[_active_layer_idx()]
+    _cur_layer = layers[_active_layer_idx()] if layers else None
 
 def _broadcast_layer():
+    global _cur_layer
     idx = _active_layer_idx()
     layers = cfg["layers"]
     lay = layers[idx] if layers else None
+    _cur_layer = lay
     SC.sm_active = bool(lay.get("sm_active", False)) if lay else False
     send_json({
         "event": "layer_changed",
@@ -1012,9 +1025,10 @@ def handle_encoder(enc_num, delta):
         else:
             for _ in range(-delta): kbd.send(Keycode.CONTROL, Keycode.SHIFT, Keycode.TAB)
     elif mode == "VOLUME":
-        for _ in range(abs(delta)):
-            if delta > 0: cc.send(ConsumerControlCode.VOLUME_INCREMENT)
-            else:         cc.send(ConsumerControlCode.VOLUME_DECREMENT)
+        if delta > 0:
+            for _ in range(delta):  cc.send(ConsumerControlCode.VOLUME_INCREMENT)
+        else:
+            for _ in range(-delta): cc.send(ConsumerControlCode.VOLUME_DECREMENT)
 
 # ─────────────────────────────────────────────────────────────
 #  14. SERIAL PROTOCOL
@@ -1085,6 +1099,7 @@ def handle_command(raw):
             else:
                 cfg["layers"] = layers
                 cfg["active_layer"] = min(cfg["active_layer"], len(layers)-1)
+                _refresh_cur_layer()
                 send_json({"event":"ack_layers","count":len(layers)})
                 oled.mark_dirty()
         else:
@@ -1113,6 +1128,7 @@ def handle_command(raw):
         if len(layers) > 1 and 0 <= idx < len(layers):
             layers.pop(idx)
             cfg["active_layer"] = min(cfg["active_layer"], len(layers)-1)
+            _refresh_cur_layer()
             send_json({"event":"ack_remove_layer"})
         else:
             send_json({"error":"cannot_remove_last_layer"})
@@ -1149,10 +1165,6 @@ def handle_command(raw):
         key  = cmd.get("key")
         val  = cmd.get("value")
         layers = cfg["layers"]
-        _LAYER_PROPS = frozenset((
-            "name","sm_active","sm_orbit_mods","sm_pan_mods",
-            "enc1_mode","enc2_mode","enc1_sw","enc2_sw",
-        ))
         if key and key in _LAYER_PROPS and 0 <= li < len(layers):
             layers[li][key] = val
             # Refresh sm_active cache if current layer changed
@@ -1222,9 +1234,9 @@ def handle_command(raw):
 
 # Populate the settings cache from the loaded config
 _sync_cache()
-# Initialise sm_active from the boot layer
-_boot_layer = _active_layer()
-SC.sm_active = bool(_boot_layer.get("sm_active", False)) if _boot_layer else False
+# Populate active-layer cache (must come after _sync_cache so sm exists for Kalman q)
+_refresh_cur_layer()
+SC.sm_active = bool(_cur_layer.get("sm_active", False)) if _cur_layer else False
 
 send_json({"event":"boot_complete","health":{
     "mlx":      mlx_ok,
@@ -1300,6 +1312,10 @@ _direct_get     = direct_keys.events.get
 _encsw_get      = encoder_switches.events.get
 _enc1           = encoder1
 _enc2           = encoder2
+_poll_tap_hold  = poll_tap_hold
+_oled_update    = oled.update
+_mlx_tick       = mlx.tick if mlx else None
+_sm_update      = sm.update
 
 while True:
     now = _monotonic()
@@ -1319,7 +1335,7 @@ while True:
             _cmd_count += 1
 
     # ── Tap/hold + key repeat ────────────────────────────────
-    poll_tap_hold(now)
+    _poll_tap_hold(now)
 
     # ── Matrix ──────────────────────────────────────────────
     ev = _keys_get()
@@ -1389,9 +1405,9 @@ while True:
     # Each read blocks for ~15ms (SM→poll→RM→read). Rate-limited
     # to 20ms intervals inside tick(). Keys, encoders, and joystick
     # are processed before this so input latency is unaffected.
-    if mlx and SC.sm_active:
-        if mlx.tick(now):
-            sm.update(mlx.x, mlx.y, mlx.z, now)
+    if _mlx_tick and SC.sm_active:
+        if _mlx_tick(now):
+            _sm_update(mlx.x, mlx.y, mlx.z, now)
     elif sm.is_orbiting or sm.is_panning:
         # Layer switched away from CAD — release any held buttons
         sm.safety_release()
@@ -1439,4 +1455,4 @@ while True:
         last_telemetry = now
 
     # ── OLED (own I2C bus — no contention with MLX) ────────
-    oled.update()
+    _oled_update()
