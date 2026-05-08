@@ -26,7 +26,7 @@ SpacePad is a fully open-source input device designed for creative professionals
 > - Settings persistence (CRC32 checksum, auto-detect corrupt files)
 > - Desktop GUI configurator (5-tab layout, side panel key editor, layer templates)
 > - System tray auto-layer switching by foreground application
-> - Import/export profiles as JSON
+> - Import/export profiles as JSON — imported files are fully validated (structure, types, and numeric ranges) before being sent to the Pico
 > - Start with Windows (registry startup option)
 > - Configurable orbit/pan key combos per-layer (Fusion 360, Onshape, Blender, etc.)
 > - Layer templates with pre-populated shortcuts for 6 CAD apps
@@ -78,7 +78,7 @@ Full build and wiring guide: [`spacepad_setup_guide.pdf`](spacepad_setup_guide.p
 - Full HID support: keyboard, mouse, and consumer control (media keys)
 - Unlimited layers with momentary (MO) layer switching via a key stack
 - Per-key configuration: tap action, hold action, tap/hold toggle, multi-step macros with delays, key repeat, mouse button hold, and encoder speed modification
-- Non-blocking MLX90393 state machine with a custom-built I²C driver — no external magnetometer library needed; uses raw I²C commands with pre-allocated buffers so the main loop never sleeps waiting for sensor data
+- Non-blocking MLX90393 state machine with a custom-built I²C driver — no external magnetometer library needed; uses raw I²C commands with pre-allocated buffers so the main loop never sleeps waiting for sensor data. Runs at 400 kHz (I²C fast mode)
 - Space mouse with configurable sensitivity, deadzone, Z-threshold, low-pass filter, acceleration curve, orbit enter/exit timing, and Z-axis mode (zoom or pan). **Orbit and pan key combos are configurable per-layer** — supports Fusion 360 (Shift+MMB), Onshape/SolidWorks (MMB), Blender (MMB), Maya (Alt+MMB), and custom combos
 - Joystick with boot-time auto-calibration, fractional sub-pixel accumulators for smooth movement, configurable deadzone/speed/inversion
 - Encoder 2 zoom override: hold the extra button to temporarily switch encoder 2 to zoom mode
@@ -87,7 +87,8 @@ Full build and wiring guide: [`spacepad_setup_guide.pdf`](spacepad_setup_guide.p
 - Telemetry streaming at 20 Hz for live joystick and space mouse visualization
 - Passthrough mode for the GUI visualizer (reports key events without sending HID)
 - App-to-layer mappings stored on Pico alongside all other settings
-- Performance-optimized hot path: flat settings cache, pre-allocated I²C buffers, pre-built JSON strings, dispatch tables instead of elif chains
+- Performance-optimized hot path: flat settings cache, active-layer dict cache, pre-allocated I²C buffers, pre-built JSON strings, Kalman q synced only on config change, dispatch tables instead of elif chains
+- Hardened serial protocol: `set` command rolls back on invalid values, macro delays capped at 10 s, layer property writes restricted to an allowlist, imported layer structures fully validated before applying
 
 ### Desktop App (`spacepad_gui.py`)
 
@@ -108,7 +109,7 @@ A single application that serves as both the full configurator GUI and a backgro
 - Live status display showing the current foreground app and matched layer
 - Tray icon tooltip shows current layer and matched app at a glance
 - Tray right-click menu: open GUI, current layer/app info, toggle auto-switching, launch minimized option, quit
-- Auto-connect to the last known COM port on startup
+- Auto-connect to the last known COM port on startup, with automatic reconnect watchdog after USB unplug/replug — subscribe, config fetch, and sensor zero are re-issued on every connection
 - Unsaved changes warning before quitting
 - Launch with `--minimized` flag or enable "Launch minimized to tray" in the tray menu to start straight to tray
 
@@ -123,7 +124,7 @@ A single application that serves as both the full configurator GUI and a backgro
 | Encoder 1 (CLK, DT, SW) | GP10, GP11, GP12 | |
 | Encoder 2 (CLK, DT, SW) | GP13, GP14, GP15 | |
 | I²C SDA (MLX) | GP16 | CJMCU-90393 @ 0x0C (hardware I²C) |
-| I²C SCL (MLX) | GP17 | 100 kHz |
+| I²C SCL (MLX) | GP17 | 400 kHz (fast mode) |
 | Extra button 1 | GP18 | Configurable action / enc2 zoom hold |
 | Extra button 2 | GP19 | Layer cycle |
 | OLED SDA | GP20 | SSD1306 @ 0x3C (bitbang I²C) |
@@ -145,7 +146,7 @@ A detailed wiring diagram for the key matrix is included in the [setup guide PDF
   - `adafruit_ssd1306` (OLED driver)
   - `adafruit_bus_device` (I²C helpers for OLED)
   - No magnetometer library needed — the firmware includes a custom-built I²C driver for the CJMCU-90393
-- **Python 3.10+** on your PC for the configurator app
+- **Python 3.11+** on your PC for the configurator app
 
 ### Pico Firmware Setup
 

@@ -13,17 +13,17 @@ from PySide6.QtWidgets import (
     QApplication, QMainWindow, QWidget, QDialog, QVBoxLayout, QHBoxLayout,
     QGridLayout, QStackedWidget, QTabWidget, QScrollArea, QFrame, QSplitter,
     QLabel, QPushButton, QSlider, QComboBox, QLineEdit, QSpinBox, QDoubleSpinBox,
-    QRadioButton, QButtonGroup, QCheckBox, QListWidget, QListWidgetItem,
-    QTextEdit, QSizePolicy, QFileDialog, QMessageBox, QInputDialog,
-    QStatusBar, QToolButton, QSystemTrayIcon, QMenu,
+    QRadioButton, QButtonGroup, QListWidget, QListWidgetItem,
+    QFileDialog, QMessageBox, QInputDialog,
+    QSystemTrayIcon, QMenu,
 )
 from PySide6.QtCore import (
-    Qt, QThread, Signal, Slot, QTimer, QSize, QPointF, QRectF, QObject,
+    Qt, QThread, Signal, Slot, QTimer, QObject,
     QSettings,
 )
 from PySide6.QtGui import (
-    QPainter, QPen, QBrush, QColor, QFont, QPalette, QPixmap, QIcon,
-    QLinearGradient, QPainterPath, QFontDatabase, QAction, QImage,
+    QPainter, QPen, QColor, QPixmap, QIcon,
+    QAction, QImage,
     QShortcut, QKeySequence,
 )
 
@@ -995,6 +995,26 @@ class AppWatcher(QThread):
 #  6. VALIDATE CONFIG
 # ─────────────────────────────────────────────────────────────
 
+_VALID_NUMERIC_CFG = {
+    "sm_sensitivity":      (float, 0.1,  100.0),
+    "sm_deadzone":         (float, 0.0,  10000.0),
+    "sm_z_threshold":      (float, 0.0,  10000.0),
+    "sm_kalman_q":         (float, 0.001, 1.0),
+    "sm_accel_curve":      (float, 1.0,  10.0),
+    "sm_orbit_enter_ms":   (int,   0,    10000),
+    "sm_orbit_exit_ms":    (int,   0,    10000),
+    "joy_deadzone":        (int,   0,    65535),
+    "joy_speed":           (float, 0.0,  100.0),
+    "enc1_speed":          (int,   0,    200),
+    "enc2_speed":          (int,   0,    200),
+    "tap_hold_ms":         (int,   50,   5000),
+    "key_repeat_delay_ms": (int,   0,    10000),
+    "key_repeat_rate_ms":  (int,   10,   5000),
+    "default_layer":       (int,   0,    255),
+}
+_MACRO_STEP_DELAY_MAX = 10000   # ms — matches firmware cap
+
+
 def validate_config(data):
     if not isinstance(data, dict):
         return False, "Root must be a JSON object"
@@ -1007,6 +1027,29 @@ def validate_config(data):
         keys = layer.get("keys")
         if not isinstance(keys, list) or len(keys) != 25:
             return False, f"Layer {i} 'keys' must be a list of 25 entries"
+        for j, key in enumerate(keys):
+            if not isinstance(key, dict):
+                return False, f"Layer {i}, key {j} is not an object"
+            macro = key.get("macro")
+            if macro is not None:
+                if not isinstance(macro, list):
+                    return False, f"Layer {i}, key {j}: macro must be a list"
+                for s, step in enumerate(macro):
+                    if not isinstance(step, dict):
+                        return False, f"Layer {i}, key {j}, macro step {s} is not an object"
+                    delay = step.get("delay_ms", 0)
+                    if not isinstance(delay, (int, float)) or delay < 0 or delay > _MACRO_STEP_DELAY_MAX:
+                        return False, (
+                            f"Layer {i}, key {j}, macro step {s}: "
+                            f"delay_ms must be 0–{_MACRO_STEP_DELAY_MAX}"
+                        )
+    for key, (typ, lo, hi) in _VALID_NUMERIC_CFG.items():
+        if key in data:
+            v = data[key]
+            if not isinstance(v, (int, float)):
+                return False, f"'{key}' must be a number, got {type(v).__name__}"
+            if not (lo <= v <= hi):
+                return False, f"'{key}' must be in range [{lo}, {hi}], got {v}"
     return True, ""
 
 
@@ -1940,7 +1983,7 @@ class MatrixTab(QWidget):
         type_radios = {}
         for val, label in types:
             rb = QRadioButton(label)
-            rb.setStyleSheet(f"font-size: 11px;")
+            rb.setStyleSheet("font-size: 11px;")
             type_group.addButton(rb)
             type_radios[val] = rb
             type_row.addWidget(rb)
@@ -2448,7 +2491,6 @@ class LayersTab(QWidget):
         if idx < 0 or idx >= len(layers):
             return
         layer = layers[idx]
-        mode_vals = list(ENCODER_MODES.keys())
         for enc in (1, 2):
             mode = layer.get(f"enc{enc}_mode", "V_SCROLL")
             cb = getattr(self, f"_enc{enc}_mode_cb")
@@ -3624,11 +3666,6 @@ class MainWindow(QMainWindow):
                 return
             self._settings.setValue("last_port", port)
             self.serial.connect_port(port)
-            QTimer.singleShot(400, lambda: (
-                self.serial.send({"action":"subscribe"}),
-                self.serial.send({"action":"get_config"}),
-                self.serial.send({"action":"zero"}),
-            ))
 
     def _on_connected(self, port):
         self._status_dot.setStyleSheet(f"color: {T.GREEN}; font-size: 16px; border: none;")
@@ -3641,6 +3678,13 @@ class MainWindow(QMainWindow):
         self._tray.setIcon(self._make_tray_icon(connected=True))
         self._tray.setToolTip(f"SpacePad — Connected ({port})")
         self._log(f"Connected to {port}")
+        # Subscribe, fetch config, and zero the space mouse — needed on every
+        # connection including auto-reconnect after USB unplug/replug.
+        QTimer.singleShot(400, lambda: (
+            self.serial.send({"action": "subscribe"}),
+            self.serial.send({"action": "get_config"}),
+            self.serial.send({"action": "zero"}),
+        ))
 
     def _on_disconnected(self):
         if self._tab_vis._passthrough:
