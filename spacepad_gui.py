@@ -801,7 +801,14 @@ class SerialWorker(QThread):
                 if "timeout" not in err and "timed out" not in err:
                     self._running = False
 
+        # Flush any remaining queued sends (e.g. release_all from disconnect)
         if self._port and self._port.is_open:
+            while self._send_queue:
+                msg = self._send_queue.popleft()
+                try:
+                    self._port.write((json.dumps(msg) + "\n").encode())
+                except Exception:
+                    break
             try:
                 self._port.close()
             except Exception:
@@ -849,6 +856,10 @@ class SerialManager(QObject):
 
     def disconnect_port(self):
         if self._worker:
+            # Queue release_all so the Pico clears orbit/pan state before we drop
+            # the serial connection — prevents stuck Shift+MMB after GUI closes.
+            if self._worker.is_connected():
+                self._worker.send({"action": "release_all"})
             self._worker.stop()
             self._worker.wait(1000)
             self._worker = None

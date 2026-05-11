@@ -1072,10 +1072,18 @@ def handle_command(raw):
 
     elif action == "passthrough_off":
         passthrough_mode = False
-        # Release any held keys in case they were stuck
+        # Release any held keys/buttons including orbit/pan state
         kbd.release_all()
         mouse.release_all()
+        sm.safety_release()
         send_json({"event":"passthrough_off"})
+
+    elif action == "release_all":
+        # GUI sends this before disconnecting to clear any stuck HID state
+        kbd.release_all()
+        mouse.release_all()
+        sm.safety_release()
+        send_json({"event":"ack_release_all"})
 
     elif action == "set":
         k, v = cmd.get("key"), cmd.get("value")
@@ -1088,6 +1096,11 @@ def handle_command(raw):
                 cfg[k] = old_v   # roll back to last good value
                 send_json({"error":"invalid_value","key":k})
                 return
+            # Exit orbit/pan before new space-mouse thresholds take effect —
+            # prevents the cursor being hijacked if the new deadzone is below
+            # the current sensor reading.
+            if k.startswith("sm_"):
+                sm.safety_release()
             send_json({"event":"ack","key":k,"value":v})
             oled.mark_dirty()
         else:
