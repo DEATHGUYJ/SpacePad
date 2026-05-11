@@ -186,7 +186,10 @@ def _sync_cache():
     SC.sm_kalman_q       = max(0.001, min(1.0, cfg.get("sm_kalman_q", 0.2)))
     SC.sm_accel          = cfg["sm_accel"]
     SC.sm_accel_curve    = max(1.0, cfg["sm_accel_curve"])
-    SC.sm_z_mode         = cfg["sm_z_mode"]
+    _zm = cfg["sm_z_mode"]
+    if _zm not in ("ZOOM", "PAN"):
+        raise ValueError("invalid sm_z_mode")
+    SC.sm_z_mode = _zm
     SC.sm_inv_s10        = 1.0 / (max(0.1, cfg["sm_sensitivity"]) * 10)  # cached reciprocal
     SC.sm_orbit_enter    = cfg["sm_orbit_enter_ms"] / 1000.0   # stored as seconds
     SC.sm_orbit_exit     = cfg["sm_orbit_exit_ms"]  / 1000.0   # stored as seconds

@@ -549,7 +549,7 @@ class SliderRow(QWidget):
         if not self._updating:
             # Debounce: only emit after 150ms of no changes
             if not hasattr(self, '_debounce'):
-                self._debounce = QTimer()
+                self._debounce = QTimer(self)
                 self._debounce.setSingleShot(True)
                 self._debounce.timeout.connect(
                     lambda: self.valueChanged.emit(self.get_value())
@@ -2453,7 +2453,9 @@ class LayersTab(QWidget):
         if row < 0: row = al
         if row < len(layers):
             layer = layers[row]
+            self._sm_toggle.blockSignals(True)
             self._sm_toggle.setChecked(layer.get("sm_active", False))
+            self._sm_toggle.blockSignals(False)
             self._orbit_combo.blockSignals(True)
             self._orbit_combo.setCurrentText(_mods_to_label(layer.get("sm_orbit_mods", ["SHIFT"])))
             self._orbit_combo.blockSignals(False)
@@ -2461,15 +2463,27 @@ class LayersTab(QWidget):
             self._pan_combo.setCurrentText(_mods_to_label(layer.get("sm_pan_mods", [])))
             self._pan_combo.blockSignals(False)
         self._refresh_enc_modes()
-        if "btn_extra1" in cfg: self._btn1_combo.setCurrentText(cfg["btn_extra1"])
+        if "btn_extra1" in cfg:
+            self._btn1_combo.blockSignals(True)
+            self._btn1_combo.setCurrentText(cfg["btn_extra1"])
+            self._btn1_combo.blockSignals(False)
         if "tap_hold_ms" in cfg: self._tap_hold_row.set_value(cfg["tap_hold_ms"])
-        if "key_repeat_enabled" in cfg: self._rep_toggle.setChecked(cfg["key_repeat_enabled"])
+        if "key_repeat_enabled" in cfg:
+            self._rep_toggle.blockSignals(True)
+            self._rep_toggle.setChecked(cfg["key_repeat_enabled"])
+            self._rep_toggle.blockSignals(False)
         if "key_repeat_delay_ms" in cfg: self._rep_delay.set_value(cfg["key_repeat_delay_ms"])
         if "key_repeat_rate_ms" in cfg: self._rep_rate.set_value(cfg["key_repeat_rate_ms"])
         if "enc1_speed" in cfg: self._e1_speed.set_value(cfg["enc1_speed"])
         if "enc2_speed" in cfg: self._e2_speed.set_value(cfg["enc2_speed"])
-        if "enc1_invert" in cfg: self._e1_invert.setChecked(cfg["enc1_invert"])
-        if "enc2_invert" in cfg: self._e2_invert.setChecked(cfg["enc2_invert"])
+        if "enc1_invert" in cfg:
+            self._e1_invert.blockSignals(True)
+            self._e1_invert.setChecked(cfg["enc1_invert"])
+            self._e1_invert.blockSignals(False)
+        if "enc2_invert" in cfg:
+            self._e2_invert.blockSignals(True)
+            self._e2_invert.setChecked(cfg["enc2_invert"])
+            self._e2_invert.blockSignals(False)
 
     def set_active(self, idx, name):
         self._active_lbl.setText(f"[{idx}] {name}")
@@ -2857,9 +2871,18 @@ class InputTab(QWidget):
         # Joystick
         if "joy_speed"    in cfg: self._speed.set_value(cfg["joy_speed"])
         if "joy_deadzone" in cfg: self._dz.set_value(cfg["joy_deadzone"])
-        if "joy_invert_x" in cfg: self._ix_toggle.setChecked(cfg["joy_invert_x"])
-        if "joy_invert_y" in cfg: self._iy_toggle.setChecked(cfg["joy_invert_y"])
-        if "joy_sw"       in cfg: self._joy_sw_combo.setCurrentText(cfg["joy_sw"])
+        if "joy_invert_x" in cfg:
+            self._ix_toggle.blockSignals(True)
+            self._ix_toggle.setChecked(cfg["joy_invert_x"])
+            self._ix_toggle.blockSignals(False)
+        if "joy_invert_y" in cfg:
+            self._iy_toggle.blockSignals(True)
+            self._iy_toggle.setChecked(cfg["joy_invert_y"])
+            self._iy_toggle.blockSignals(False)
+        if "joy_sw" in cfg:
+            self._joy_sw_combo.blockSignals(True)
+            self._joy_sw_combo.setCurrentText(cfg["joy_sw"])
+            self._joy_sw_combo.blockSignals(False)
         # Space mouse
         sm_mapping = {
             "sm_sensitivity": self._sens, "sm_deadzone": self._sm_dz,
@@ -2869,12 +2892,19 @@ class InputTab(QWidget):
         }
         for k, widget in sm_mapping.items():
             if k in cfg: widget.set_value(cfg[k])
-        if "sm_accel"  in cfg: self._accel_toggle.setChecked(cfg["sm_accel"])
+        if "sm_accel" in cfg:
+            self._accel_toggle.blockSignals(True)
+            self._accel_toggle.setChecked(cfg["sm_accel"])
+            self._accel_toggle.blockSignals(False)
         if "sm_z_mode" in cfg:
+            self._zm_pan.blockSignals(True)
+            self._zm_zoom.blockSignals(True)
             if cfg["sm_z_mode"] == "PAN":
                 self._zm_pan.setChecked(True)
             else:
                 self._zm_zoom.setChecked(True)
+            self._zm_pan.blockSignals(False)
+            self._zm_zoom.blockSignals(False)
 
 
 class ProfilesTab(QWidget):
